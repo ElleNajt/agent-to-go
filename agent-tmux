@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# agent-tmux - run any command in tmux for phone access
+#
+# Usage: agent-tmux <command> [args...]
+# Example: alias claude='agent-tmux claude'
+
+if [ $# -eq 0 ]; then
+    echo "Usage: agent-tmux <command> [args...]"
+    exit 1
+fi
+
+CMD="$1"
+shift
+
+# Word lists for random names
+ADJECTIVES=(swift bright calm deep quick sharp warm cool fresh bold)
+NOUNS=(oak fox elm ray dew ash fern hawk moss pine)
+
+# Pick random words
+ADJ=${ADJECTIVES[$RANDOM % ${#ADJECTIVES[@]}]}
+NOUN=${NOUNS[$RANDOM % ${#NOUNS[@]}]}
+
+PROJECT=$(basename "$PWD")
+SESSION="${CMD}-${PROJECT}-${ADJ}-${NOUN}"
+
+echo "Starting $CMD in tmux session: $SESSION"
+echo "Access from phone via agent-phone picker"
+
+# Create new tmux session with the command
+exec tmux new-session -s "$SESSION" "$CMD" "$@"
