@@ -352,7 +352,10 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
         </h2>
         {{range $sessions}}
         <div class="session-row">
-            <a class="session" href="/connect/{{.}}?csrf={{$.CSRFToken}}">{{.}}</a>
+            <form action="/connect/{{.}}" method="POST" style="display:contents;">
+                <input type="hidden" name="csrf" value="{{$.CSRFToken}}">
+                <button type="submit" class="session">{{.}}</button>
+            </form>
             <form action="/kill/{{.}}" method="POST" style="margin:0;">
                 <input type="hidden" name="csrf" value="{{$.CSRFToken}}">
                 <button type="submit" class="kill-btn">✕</button>
@@ -375,9 +378,11 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 func handleConnect(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 
-	// Validate CSRF token (prevents cross-site ttyd spawning via img tags)
-	token := r.URL.Query().Get("csrf")
-	if subtle.ConstantTimeCompare([]byte(token), []byte(csrfToken)) != 1 {
+	if r.Method != "POST" {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if !validateCSRF(r) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
