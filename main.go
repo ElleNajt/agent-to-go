@@ -145,10 +145,19 @@ func startTtyd(session string) (int, error) {
 		return 0, err
 	}
 
-	// Wait in background to avoid zombie processes
-	go cmd.Wait()
-
 	ttydInstances[session] = &ttydInstance{port: port, cmd: cmd}
+
+	// Wait in background to avoid zombie processes and clean up on exit
+	go func() {
+		cmd.Wait()
+		portMutex.Lock()
+		if inst, ok := ttydInstances[session]; ok && inst.cmd == cmd {
+			log.Printf("ttyd for session %q exited, cleaning up", session)
+			freePorts = append(freePorts, inst.port)
+			delete(ttydInstances, session)
+		}
+		portMutex.Unlock()
+	}()
 	log.Printf("Started ttyd for session %q on port %d", session, port)
 
 	// Wait for ttyd to be ready (up to 2 seconds)
