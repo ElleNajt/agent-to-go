@@ -416,6 +416,15 @@ func generateSessionName(cmd, project string) string {
 
 // Spawn a new session in a directory
 func spawnSession(dir, cmd string) (string, error) {
+	// Check directory exists
+	info, err := os.Stat(dir)
+	if err != nil {
+		return "", fmt.Errorf("directory not found: %s", dir)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("not a directory: %s", dir)
+	}
+
 	project := filepath.Base(dir)
 	session := generateSessionName(cmd, project)
 
