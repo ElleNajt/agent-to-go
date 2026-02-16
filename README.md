@@ -185,8 +185,6 @@ If you're already inside tmux, it creates a detached session and switches to it.
 **What's protected:**
 
 - No binding to public interfaces (refuses to start if Tailscale unavailable)
-- No open redirects (redirects use hardcoded Tailscale IP)
-- No command injection (session names validated against actual tmux sessions)
 - Orphaned ttyd processes cleaned up automatically
 
 **What's NOT protected:**
