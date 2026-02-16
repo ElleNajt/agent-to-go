@@ -181,6 +181,7 @@ func hostCheckMiddleware(next http.Handler) http.Handler {
 		}
 		// Prevent clickjacking — page must not be framed by other sites
 		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
 }
