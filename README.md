@@ -1,8 +1,10 @@
 # agent-to-go
 
-Access terminal sessions from your phone's browser. Works with Claude Code, Codex, aider, or any CLI tool.
+A minimal, security-conscious way to access terminal sessions from your phone's browser. Works with Claude Code, Codex, aider, or any CLI tool.
 
-**Warning:** This allows your phone to control your computer through your Tailnet. Use at your own peril and review the code if you're nervous. Consider running this on a dedicated coding VM instead of a computer with important secrets.
+No bells and whistles — just a session picker, a reverse proxy to ttyd, and layered defenses against browser-based attacks (CSRF, DNS rebinding, clickjacking, origin validation). See [SECURITY.md](SECURITY.md) for the full threat model.
+
+**Warning:** This allows your phone to control your computer through your Tailnet. Review the code and security model if you're nervous. Consider running on a dedicated coding VM rather than a machine with important secrets.
 
 <p>
 <img src="image_on_phone.png" width="250" alt="Phone and computer showing the same Claude session">
