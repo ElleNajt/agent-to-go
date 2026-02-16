@@ -2,10 +2,13 @@
 
 ## Threat model
 
-agent-to-go gives your phone browser full terminal access to your computer. The security boundary is your Tailnet: **anyone who can reach your Tailscale IP gets full terminal access**. There is no authentication beyond Tailnet membership.
+agent-to-go gives your phone browser full terminal access to your computer. The security boundary is your Tailnet: **all devices on the Tailnet are fully trusted**. There is no authentication beyond Tailnet membership — any device that can reach the Tailscale IP has full terminal access with no additional credentials.
+
+The CSRF, Origin, and Host header protections exist solely to defend against browser-based attacks from the public internet (malicious websites, DNS rebinding, cross-origin requests). They do not protect against a malicious device on the Tailnet.
 
 This means:
-- Don't use this on a shared Tailnet
+- This is designed for a single-user Tailnet
+- Don't use this on a shared Tailnet where you don't trust every device
 - Consider running on a dedicated coding VM rather than a machine with important secrets
 - If your Tailscale key is compromised, your terminals are exposed
 
