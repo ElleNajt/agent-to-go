@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Track running ttyd instances
@@ -24,13 +26,20 @@ type ttydInstance struct {
 	cmd  *exec.Cmd
 }
 
+// Config for spawn restrictions
+type Config struct {
+	AllowedCommands    []string `yaml:"allowed_commands"`
+	AllowedDirectories []string `yaml:"allowed_directories"`
+}
+
 var (
 	ttydInstances = make(map[string]*ttydInstance)
 	portMutex     sync.Mutex
 	nextPort      = 7700
 	freePorts     []int // reclaimed ports to reuse
 	tailscaleIP   string
-	csrfToken     string // generated at startup, required for POST requests
+	csrfToken     string  // generated at startup, required for POST requests
+	config        *Config // nil = spawn disabled
 )
 
 var (
@@ -42,6 +51,68 @@ func generateCSRFToken() string {
 	bytes := make([]byte, 32)
 	rand.Read(bytes)
 	return hex.EncodeToString(bytes)
+}
+
+func loadConfig() *Config {
+	home, _ := os.UserHomeDir()
+	configPath := filepath.Join(home, ".config", "agent-phone", "config.yaml")
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil // No config = spawn disabled
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		log.Printf("Warning: invalid config file: %v", err)
+		return nil
+	}
+
+	// Expand ~ in directory paths
+	for i, dir := range cfg.AllowedDirectories {
+		if strings.HasPrefix(dir, "~/") {
+			cfg.AllowedDirectories[i] = filepath.Join(home, dir[2:])
+		} else if dir == "~" {
+			cfg.AllowedDirectories[i] = home
+		}
+	}
+
+	return &cfg
+}
+
+func isCommandAllowed(cmd string) bool {
+	if config == nil {
+		return false
+	}
+	for _, allowed := range config.AllowedCommands {
+		if cmd == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func isDirectoryAllowed(dir string) bool {
+	if config == nil {
+		return false
+	}
+	// Resolve to absolute path
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	// Check if under any allowed directory
+	for _, allowed := range config.AllowedDirectories {
+		absAllowed, err := filepath.Abs(allowed)
+		if err != nil {
+			continue
+		}
+		// Must be exactly the allowed dir or a subdirectory
+		if absDir == absAllowed || strings.HasPrefix(absDir, absAllowed+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func validateCSRF(r *http.Request) bool {
@@ -69,6 +140,14 @@ func validateOrigin(r *http.Request) bool {
 func main() {
 	mathrand.Seed(time.Now().UnixNano())
 	csrfToken = generateCSRFToken()
+	config = loadConfig()
+
+	if config != nil {
+		log.Printf("Spawn enabled - allowed commands: %v", config.AllowedCommands)
+		log.Printf("Spawn enabled - allowed directories: %v", config.AllowedDirectories)
+	} else {
+		log.Printf("Spawn disabled - no config at ~/.config/agent-phone/config.yaml")
+	}
 
 	http.HandleFunc("/", handleIndex)
 	http.HandleFunc("/connect/", handleConnect)
@@ -353,23 +432,27 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 <body>
     <h1>Claude Sessions</h1>
     
+    {{if .SpawnEnabled}}
     <form class="new-session" action="/spawn" method="POST">
         <input type="hidden" name="csrf" value="{{.CSRFToken}}">
         <input name="dir" placeholder="/path/to/project" required>
         <input name="cmd" placeholder="claude" value="claude">
         <button type="submit">+ New Session</button>
     </form>
+    {{end}}
 
     {{if .Groups}}
         {{range $project, $sessions := .Groups}}
         <h2>
             <span>{{$project}}</span>
+            {{if $.SpawnEnabled}}
             <form action="/spawn-project" method="POST" style="display:inline;margin:0;">
                 <input type="hidden" name="csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="project" value="{{$project}}">
                 <input type="hidden" name="cmd" value="claude">
                 <button type="submit" class="add-btn">+</button>
             </form>
+            {{end}}
         </h2>
         {{range $sessions}}
         <div class="session-row">
@@ -391,8 +474,9 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 </html>`))
 
 	tmpl.Execute(w, map[string]interface{}{
-		"Groups":    groups,
-		"CSRFToken": csrfToken,
+		"Groups":       groups,
+		"CSRFToken":    csrfToken,
+		"SpawnEnabled": config != nil,
 	})
 }
 
@@ -526,6 +610,12 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if spawn is enabled
+	if config == nil {
+		http.Error(w, "spawn disabled - no config file", http.StatusForbidden)
+		return
+	}
+
 	dir := r.FormValue("dir")
 	cmd := r.FormValue("cmd")
 	if cmd == "" {
@@ -540,6 +630,16 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(dir, "~") {
 		home, _ := os.UserHomeDir()
 		dir = home + strings.TrimPrefix(dir, "~")
+	}
+
+	// Validate against allowlists
+	if !isCommandAllowed(cmd) {
+		http.Error(w, fmt.Sprintf("command %q not allowed", cmd), http.StatusForbidden)
+		return
+	}
+	if !isDirectoryAllowed(dir) {
+		http.Error(w, fmt.Sprintf("directory %q not allowed", dir), http.StatusForbidden)
+		return
 	}
 
 	session, err := spawnSession(dir, cmd)
@@ -608,6 +708,12 @@ func handleSpawnProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if spawn is enabled
+	if config == nil {
+		http.Error(w, "spawn disabled - no config file", http.StatusForbidden)
+		return
+	}
+
 	project := r.FormValue("project")
 	if project == "" {
 		http.Error(w, "project required", http.StatusBadRequest)
@@ -638,6 +744,16 @@ func handleSpawnProject(w http.ResponseWriter, r *http.Request) {
 	cmd := r.FormValue("cmd")
 	if cmd == "" {
 		cmd = "claude"
+	}
+
+	// Validate against allowlists
+	if !isCommandAllowed(cmd) {
+		http.Error(w, fmt.Sprintf("command %q not allowed", cmd), http.StatusForbidden)
+		return
+	}
+	if !isDirectoryAllowed(dir) {
+		http.Error(w, fmt.Sprintf("directory %q not allowed", dir), http.StatusForbidden)
+		return
 	}
 
 	session, err := spawnSession(dir, cmd)
