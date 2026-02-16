@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/subtle"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -413,20 +414,20 @@ func TestRedirectUsesHardcodedIP(t *testing.T) {
 	}
 }
 
-// --- 8. ttyd Origin Checking ---
-// Verify ttyd is started with --check-origin flag.
+// --- 8. ttyd Binds to Localhost Only ---
+// ttyd must bind to 127.0.0.1, not the Tailscale IP, so it's unreachable
+// from the network. All access goes through the reverse proxy.
 
-func TestTtydCommandIncludesOriginCheck(t *testing.T) {
-	// We can't easily test the actual command without starting ttyd,
-	// but we can verify the code path by checking the startTtyd function
-	// includes -O flag. This is a code inspection test.
+func TestTtydBindsToLocalhostOnly(t *testing.T) {
+	// Verify the startTtyd function uses 127.0.0.1 for binding.
+	// We can't start ttyd in tests, but we can verify the readiness check
+	// polls 127.0.0.1 (which reflects what -i flag is used).
 
-	// For now, just document that this must be verified manually or
-	// by inspecting the running process:
-	// ps aux | grep ttyd | grep -- "-O"
-
-	t.Log("ttyd --check-origin (-O) flag must be present in startTtyd function")
-	t.Log("Verify with: grep -n '\\-O' main.go")
+	// The readiness check address is constructed as "127.0.0.1:{port}".
+	// If this changes, the test port polling would break, making the
+	// behavioral test obvious. This is a documentation/inspection test.
+	t.Log("ttyd must be started with -i 127.0.0.1")
+	t.Log("Verify with: grep -n '127.0.0.1' main.go | grep -i ttyd")
 }
 
 // --- 9. CSRF Token Not in URLs ---
@@ -753,13 +754,24 @@ func TestAttack_NullOrigin(t *testing.T) {
 }
 
 // Attack: WebSocket hijacking from evil page
-func TestAttack_WebSocketHijackDocumentation(t *testing.T) {
-	// This attack is blocked by ttyd's --check-origin flag, not our Go code
-	// Document the protection:
-	t.Log("WebSocket hijacking blocked by ttyd -O (--check-origin) flag")
-	t.Log("Attack: evil.com JS does new WebSocket('ws://100.x.x.x:7700/ws')")
-	t.Log("Protection: ttyd rejects if Origin header doesn't match server host")
-	t.Log("Verify: ps aux | grep ttyd | grep -- '-O'")
+func TestAttack_WebSocketHijack(t *testing.T) {
+	// Attack: evil.com JS does new WebSocket('ws://100.x.x.x:7700/ws')
+	// Protection: ttyd binds to 127.0.0.1 only, so the connection is refused
+	// at the network level. The only way to reach ttyd is through our reverse
+	// proxy at /terminal/{session}/, which validates Host headers.
+
+	// Simulate the attack via our reverse proxy with a rebound Host
+	req := httptest.NewRequest("GET", "/terminal/fake-session/ws", nil)
+	req.Host = "evil.com:8090"
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+
+	w := httptest.NewRecorder()
+	hostCheckMiddleware(http.HandlerFunc(handleTerminal)).ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("ATTACK SUCCEEDED: WebSocket hijack via DNS rebinding returned %d, expected 403", w.Code)
+	}
 }
 
 // =============================================================================
@@ -1130,5 +1142,180 @@ func TestValidateOriginFunction(t *testing.T) {
 			t.Errorf("validateOrigin(origin=%q, referer=%q) = %v, want %v",
 				tc.origin, tc.referer, result, tc.expected)
 		}
+	}
+}
+
+// =============================================================================
+// REVERSE PROXY TESTS
+// These verify that the /terminal/ reverse proxy correctly inherits
+// security middleware and properly routes to ttyd.
+// =============================================================================
+
+// --- Reverse proxy inherits Host header validation ---
+
+func TestTerminalProxy_DNSRebindingBlocked(t *testing.T) {
+	// After DNS rebinding, attacker's JS fetches /terminal/{session}/ to reach ttyd.
+	// Host header is "evil.com" — middleware must block this.
+
+	req := httptest.NewRequest("GET", "/terminal/some-session/", nil)
+	req.Host = "evil.com:8090"
+
+	w := httptest.NewRecorder()
+	hostCheckMiddleware(http.HandlerFunc(handleTerminal)).ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("ATTACK SUCCEEDED: DNS rebinding to /terminal/ returned %d, expected 403", w.Code)
+	}
+}
+
+func TestTerminalProxy_DNSRebindingWebSocketBlocked(t *testing.T) {
+	// Attacker tries WebSocket upgrade through reverse proxy after DNS rebinding.
+	// This is the critical path — if this succeeds, attacker gets terminal access.
+
+	req := httptest.NewRequest("GET", "/terminal/some-session/ws", nil)
+	req.Host = "evil.com:8090"
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+
+	w := httptest.NewRecorder()
+	hostCheckMiddleware(http.HandlerFunc(handleTerminal)).ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("ATTACK SUCCEEDED: WebSocket via DNS rebinding returned %d, expected 403", w.Code)
+	}
+}
+
+func TestTerminalProxy_ValidHostAllowed(t *testing.T) {
+	// Legitimate request with correct Host header should reach handleTerminal.
+	// It will 404 because the session doesn't exist in ttydInstances,
+	// but it should NOT be blocked by the middleware.
+
+	req := httptest.NewRequest("GET", "/terminal/nonexistent-session/", nil)
+	req.Host = tailscaleIP + ":8090"
+
+	w := httptest.NewRecorder()
+	hostCheckMiddleware(http.HandlerFunc(handleTerminal)).ServeHTTP(w, req)
+
+	// Should pass host check and reach handleTerminal, which returns 404
+	if w.Code == http.StatusForbidden {
+		t.Errorf("legitimate Host %q blocked by middleware", req.Host)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for nonexistent session, got %d", w.Code)
+	}
+}
+
+// --- Reverse proxy session lookup ---
+
+func TestTerminalProxy_NoSessionReturns400(t *testing.T) {
+	req := httptest.NewRequest("GET", "/terminal/", nil)
+	req.Host = tailscaleIP
+
+	w := httptest.NewRecorder()
+	handleTerminal(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("empty session name: expected 400, got %d", w.Code)
+	}
+}
+
+func TestTerminalProxy_UnknownSessionReturns404(t *testing.T) {
+	req := httptest.NewRequest("GET", "/terminal/nonexistent-session/", nil)
+	req.Host = tailscaleIP
+
+	w := httptest.NewRecorder()
+	handleTerminal(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("nonexistent session: expected 404, got %d", w.Code)
+	}
+}
+
+func TestTerminalProxy_KnownSessionProxies(t *testing.T) {
+	// Start a simple HTTP server to act as a fake ttyd
+	fakeHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Proxied", "true")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fake ttyd response"))
+	})
+	fakeTtyd := httptest.NewServer(fakeHandler)
+	defer fakeTtyd.Close()
+
+	// Parse the port from the test server
+	fakeTtydAddr := fakeTtyd.Listener.Addr().String()
+	fakePort := 0
+	fmt.Sscanf(fakeTtydAddr, "127.0.0.1:%d", &fakePort)
+	if fakePort == 0 {
+		// Try [::1] format
+		fmt.Sscanf(fakeTtydAddr, "[::1]:%d", &fakePort)
+	}
+	if fakePort == 0 {
+		t.Fatalf("cannot parse port from test server addr: %s", fakeTtydAddr)
+	}
+
+	// Register fake ttyd instance
+	portMutex.Lock()
+	ttydInstances["test-proxy-session"] = &ttydInstance{port: fakePort, cmd: nil}
+	portMutex.Unlock()
+	defer func() {
+		portMutex.Lock()
+		delete(ttydInstances, "test-proxy-session")
+		portMutex.Unlock()
+	}()
+
+	req := httptest.NewRequest("GET", "/terminal/test-proxy-session/", nil)
+	req.Host = tailscaleIP
+
+	w := httptest.NewRecorder()
+	handleTerminal(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("proxy to fake ttyd: expected 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "fake ttyd response") {
+		t.Errorf("proxy did not forward to fake ttyd, got: %s", w.Body.String())
+	}
+}
+
+// --- Full middleware chain test ---
+
+func TestTerminalProxy_FullChain_DNSRebinding(t *testing.T) {
+	// End-to-end: register the handler on a test mux with middleware,
+	// then simulate a DNS rebinding request through the full chain.
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/terminal/", handleTerminal)
+	handler := hostCheckMiddleware(mux)
+
+	req := httptest.NewRequest("GET", "/terminal/any-session/", nil)
+	req.Host = "evil.com" // DNS rebound
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("ATTACK SUCCEEDED: full chain DNS rebinding returned %d, expected 403", w.Code)
+	}
+}
+
+func TestTerminalProxy_FullChain_LegitimateAccess(t *testing.T) {
+	// End-to-end: legitimate request passes middleware, reaches handler.
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/terminal/", handleTerminal)
+	handler := hostCheckMiddleware(mux)
+
+	req := httptest.NewRequest("GET", "/terminal/nonexistent/", nil)
+	req.Host = tailscaleIP
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// Should pass middleware (not 403) and reach handler (404 for unknown session)
+	if w.Code == http.StatusForbidden {
+		t.Error("legitimate request blocked by middleware")
+	}
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for nonexistent session, got %d", w.Code)
 	}
 }
