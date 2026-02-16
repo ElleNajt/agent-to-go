@@ -159,6 +159,9 @@ func startTtyd(session string) (int, error) {
 		port = freePorts[len(freePorts)-1]
 		freePorts = freePorts[:len(freePorts)-1]
 	} else {
+		if nextPort > 65535 {
+			return 0, fmt.Errorf("no ports available")
+		}
 		port = nextPort
 		nextPort++
 	}
