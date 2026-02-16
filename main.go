@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -26,9 +29,19 @@ var (
 	tailscaleIP   string
 )
 
+var (
+	adjectives = []string{"clever", "sleepy", "happy", "busy", "cozy", "gentle", "curious", "eager", "nimble", "quick"}
+	nouns      = []string{"otter", "panda", "fox", "rabbit", "owl", "mouse", "seal", "frog", "duck", "wren"}
+)
+
 func main() {
+	rand.Seed(time.Now().UnixNano())
+
 	http.HandleFunc("/", handleIndex)
 	http.HandleFunc("/connect/", handleConnect)
+	http.HandleFunc("/spawn", handleSpawn)
+	http.HandleFunc("/spawn/", handleSpawnProject)
+	http.HandleFunc("/kill/", handleKill)
 
 	// Get Tailscale IP - fail if unavailable (security: never bind to all interfaces)
 	out, err := exec.Command("tailscale", "ip", "-4").Output()
@@ -138,18 +151,33 @@ func startTtyd(session string) (int, error) {
 	return port, nil
 }
 
-// Group sessions by project (name format: cmd-PROJECT-adj-noun)
-// Project can contain hyphens, so we take everything between first and last two parts
+// Group sessions by project directory (from AGENT_TMUX_DIR env var)
 func groupSessionsByProject(sessions []string) map[string][]string {
 	groups := make(map[string][]string)
 	for _, s := range sessions {
-		parts := strings.Split(s, "-")
 		project := "other"
-		if len(parts) >= 4 {
-			// cmd-project-parts-adj-noun -> project is parts[1] to parts[len-2]
-			project = strings.Join(parts[1:len(parts)-2], "-")
-		} else if len(parts) >= 2 {
-			project = parts[1]
+		// Try to get project from tmux environment
+		out, err := exec.Command("tmux", "show-environment", "-t", s, "AGENT_TMUX_DIR").Output()
+		if err == nil {
+			line := strings.TrimSpace(string(out))
+			if strings.HasPrefix(line, "AGENT_TMUX_DIR=") {
+				dir := strings.TrimPrefix(line, "AGENT_TMUX_DIR=")
+				// Make path relative to home directory
+				home, _ := os.UserHomeDir()
+				if strings.HasPrefix(dir, home) {
+					project = strings.TrimPrefix(dir, home+"/")
+				} else {
+					project = dir
+				}
+			}
+		} else {
+			// Fallback: parse from session name (cmd-PROJECT-adj-noun)
+			parts := strings.Split(s, "-")
+			if len(parts) >= 4 {
+				project = strings.Join(parts[1:len(parts)-2], "-")
+			} else if len(parts) >= 2 {
+				project = parts[1]
+			}
 		}
 		groups[project] = append(groups[project], s)
 	}
@@ -157,6 +185,7 @@ func groupSessionsByProject(sessions []string) map[string][]string {
 }
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	sessions, err := getTmuxSessions()
 	if err != nil {
 		sessions = []string{}
@@ -187,6 +216,9 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
             margin: 24px 0 12px 0;
             border-bottom: 1px solid #333;
             padding-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
         .session {
             display: block;
@@ -202,19 +234,93 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
         .session:active {
             background: #0f3460;
         }
+        .session-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .session-row .session {
+            flex: 1;
+            margin-bottom: 0;
+        }
+        .kill-btn {
+            background: #4a1a1a;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-left: 8px;
+            color: #ff6b6b;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        .kill-btn:active {
+            background: #6a2a2a;
+        }
         .empty {
             color: #666;
             font-style: italic;
+        }
+        .new-session {
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 24px;
+        }
+        .new-session input {
+            background: #1a1a2e;
+            border: 1px solid #0f3460;
+            border-radius: 8px;
+            padding: 12px;
+            color: #eee;
+            font-size: 16px;
+            width: 100%;
+            box-sizing: border-box;
+            margin-bottom: 8px;
+        }
+        .new-session button, .add-btn {
+            background: #0f3460;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 20px;
+            color: #eee;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        .new-session button:active, .add-btn:active {
+            background: #1a5490;
+        }
+        .add-btn {
+            padding: 4px 12px;
+            font-size: 14px;
         }
     </style>
 </head>
 <body>
     <h1>Claude Sessions</h1>
+    
+    <form class="new-session" action="/spawn" method="POST">
+        <input name="dir" placeholder="/path/to/project" required>
+        <input name="cmd" placeholder="claude" value="claude">
+        <button type="submit">+ New Session</button>
+    </form>
+
     {{if .Groups}}
         {{range $project, $sessions := .Groups}}
-        <h2>{{$project}}</h2>
+        <h2>
+            <span>{{$project}}</span>
+            <form action="/spawn/{{$project}}" method="POST" style="display:inline;margin:0;">
+                <input type="hidden" name="cmd" value="claude">
+                <button type="submit" class="add-btn">+</button>
+            </form>
+        </h2>
         {{range $sessions}}
-        <a class="session" href="/connect/{{.}}">{{.}}</a>
+        <div class="session-row">
+            <a class="session" href="/connect/{{.}}">{{.}}</a>
+            <form action="/kill/{{.}}" method="POST" style="margin:0;">
+                <button type="submit" class="kill-btn">✕</button>
+            </form>
+        </div>
         {{end}}
         {{end}}
     {{else}}
@@ -261,4 +367,168 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Redirect to ttyd (use Tailscale IP, not client-provided Host header)
 	http.Redirect(w, r, fmt.Sprintf("http://%s:%d", tailscaleIP, port), http.StatusFound)
+}
+
+// Get directory for a project by checking existing sessions
+func getProjectDir(project string) string {
+	sessions, err := getTmuxSessions()
+	if err != nil {
+		return ""
+	}
+	for _, s := range sessions {
+		parts := strings.Split(s, "-")
+		if len(parts) >= 4 {
+			sessionProject := strings.Join(parts[1:len(parts)-2], "-")
+			if sessionProject == project {
+				// Found a session for this project, get its directory
+				out, err := exec.Command("tmux", "show-environment", "-t", s, "AGENT_TMUX_DIR").Output()
+				if err == nil {
+					line := strings.TrimSpace(string(out))
+					if strings.HasPrefix(line, "AGENT_TMUX_DIR=") {
+						return strings.TrimPrefix(line, "AGENT_TMUX_DIR=")
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// Generate a unique session name
+func generateSessionName(cmd, project string) string {
+	sessions, _ := getTmuxSessions()
+	sessionSet := make(map[string]bool)
+	for _, s := range sessions {
+		sessionSet[s] = true
+	}
+
+	for i := 0; i < 10; i++ {
+		adj := adjectives[rand.Intn(len(adjectives))]
+		noun := nouns[rand.Intn(len(nouns))]
+		name := fmt.Sprintf("%s-%s-%s-%s", cmd, project, adj, noun)
+		if !sessionSet[name] {
+			return name
+		}
+	}
+	// Fallback with timestamp
+	return fmt.Sprintf("%s-%s-%d", cmd, project, time.Now().Unix())
+}
+
+// Spawn a new session in a directory
+func spawnSession(dir, cmd string) (string, error) {
+	project := filepath.Base(dir)
+	session := generateSessionName(cmd, project)
+
+	// Create detached tmux session
+	tmux := exec.Command("tmux", "new-session", "-d", "-s", session, "-c", dir, cmd)
+	if err := tmux.Run(); err != nil {
+		return "", err
+	}
+
+	// Store environment variables
+	exec.Command("tmux", "set-environment", "-t", session, "AGENT_TMUX_DIR", dir).Run()
+	exec.Command("tmux", "set-environment", "-t", session, "AGENT_TMUX_CMD", cmd).Run()
+
+	return session, nil
+}
+
+func handleSpawn(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != "POST" {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	dir := r.FormValue("dir")
+	cmd := r.FormValue("cmd")
+	if cmd == "" {
+		cmd = "claude"
+	}
+	if dir == "" {
+		http.Error(w, "dir required", http.StatusBadRequest)
+		return
+	}
+
+	// Expand ~ to home directory
+	if strings.HasPrefix(dir, "~") {
+		home, _ := os.UserHomeDir()
+		dir = home + strings.TrimPrefix(dir, "~")
+	}
+
+	session, err := spawnSession(dir, cmd)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/connect/"+session, http.StatusFound)
+}
+
+func handleKill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	session := strings.TrimPrefix(r.URL.Path, "/kill/")
+	if session == "" {
+		http.Error(w, "session required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate session exists
+	sessions, err := getTmuxSessions()
+	if err != nil {
+		http.Error(w, "failed to list sessions", http.StatusInternalServerError)
+		return
+	}
+	valid := false
+	for _, s := range sessions {
+		if s == session {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	// Kill the tmux session
+	exec.Command("tmux", "kill-session", "-t", session).Run()
+
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+func handleSpawnProject(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != "POST" {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	project := strings.TrimPrefix(r.URL.Path, "/spawn/")
+	if project == "" {
+		http.Error(w, "project required", http.StatusBadRequest)
+		return
+	}
+
+	dir := getProjectDir(project)
+	if dir == "" {
+		http.Error(w, "unknown project directory", http.StatusNotFound)
+		return
+	}
+
+	cmd := r.FormValue("cmd")
+	if cmd == "" {
+		cmd = "claude"
+	}
+
+	session, err := spawnSession(dir, cmd)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/connect/"+session, http.StatusFound)
 }
