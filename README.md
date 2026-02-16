@@ -2,6 +2,9 @@
 
 Access terminal sessions from your phone's browser. Works with Claude Code, or any CLI tool.
 
+![Phone and computer showing the same Claude session](image_on_phone.png)
+![Desktop view](image_on_computer.png)
+
 ## How it works
 
 1. Alias your command to run inside tmux (e.g., `alias claude='agent-tmux claude'`)

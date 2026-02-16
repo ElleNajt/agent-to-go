@@ -101,8 +101,8 @@ func startTtyd(session string) (int, error) {
 	port := nextPort
 	nextPort++
 
-	// Bind ttyd to Tailscale IP only
-	cmd := exec.Command("ttyd", "-i", tailscaleIP, "-p", fmt.Sprintf("%d", port), "-W", "tmux", "attach", "-t", session)
+	// Bind ttyd to Tailscale IP only, with larger font for mobile
+	cmd := exec.Command("ttyd", "-i", tailscaleIP, "-p", fmt.Sprintf("%d", port), "-W", "-t", "fontSize=32", "tmux", "attach", "-t", session)
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
