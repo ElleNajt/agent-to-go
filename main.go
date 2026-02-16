@@ -22,8 +22,9 @@ import (
 
 // Track running ttyd instances
 type ttydInstance struct {
-	port int
-	cmd  *exec.Cmd
+	port     int
+	cmd      *exec.Cmd
+	password string // random password for basic auth
 }
 
 // Config for spawn restrictions
@@ -222,14 +223,14 @@ func getTmuxSessions() ([]string, error) {
 	return sessions, nil
 }
 
-// Start ttyd for a session, return port
-func startTtyd(session string) (int, error) {
+// Start ttyd for a session, return port and password for basic auth
+func startTtyd(session string) (int, string, error) {
 	portMutex.Lock()
 	defer portMutex.Unlock()
 
 	// Already running?
 	if inst, ok := ttydInstances[session]; ok {
-		return inst.port, nil
+		return inst.port, inst.password, nil
 	}
 
 	// Reuse a free port or allocate a new one
@@ -239,20 +240,27 @@ func startTtyd(session string) (int, error) {
 		freePorts = freePorts[:len(freePorts)-1]
 	} else {
 		if nextPort > 65535 {
-			return 0, fmt.Errorf("no ports available")
+			return 0, "", fmt.Errorf("no ports available")
 		}
 		port = nextPort
 		nextPort++
 	}
 
+	// Generate random password for this ttyd instance
+	// This protects against cross-origin WebSocket attacks - browser won't send credentials cross-origin
+	pwdBytes := make([]byte, 16)
+	rand.Read(pwdBytes)
+	password := hex.EncodeToString(pwdBytes)
+	credential := "t:" + password // username is just "t", password is random
+
 	// Bind ttyd to Tailscale IP only, with larger font for mobile
-	// -O: reject WebSocket connections from different origins (prevents cross-site WebSocket hijacking)
-	cmd := exec.Command("ttyd", "-i", tailscaleIP, "-p", fmt.Sprintf("%d", port), "-W", "-O", "-t", "fontSize=32", "tmux", "attach", "-t", session)
+	// -c: require basic auth (protects against cross-origin attacks since browser won't send credentials)
+	cmd := exec.Command("ttyd", "-i", tailscaleIP, "-p", fmt.Sprintf("%d", port), "-W", "-c", credential, "-t", "fontSize=32", "tmux", "attach", "-t", session)
 	if err := cmd.Start(); err != nil {
-		return 0, err
+		return 0, "", err
 	}
 
-	ttydInstances[session] = &ttydInstance{port: port, cmd: cmd}
+	ttydInstances[session] = &ttydInstance{port: port, cmd: cmd, password: password}
 
 	// Wait in background to avoid zombie processes and clean up on exit
 	go func() {
@@ -286,10 +294,10 @@ func startTtyd(session string) (int, error) {
 		delete(ttydInstances, session)
 		freePorts = append(freePorts, port)
 		portMutex.Unlock()
-		return 0, fmt.Errorf("ttyd failed to start on port %d", port)
+		return 0, "", fmt.Errorf("ttyd failed to start on port %d", port)
 	}
 
-	return port, nil
+	return port, password, nil
 }
 
 // Group sessions by project directory (from AGENT_TMUX_DIR env var)
@@ -527,15 +535,15 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	port, err := startTtyd(session)
+	port, password, err := startTtyd(session)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Redirect to ttyd (use Tailscale IP, not client-provided Host header)
-	// Add cache-busting timestamp to prevent browser from caching old port redirects
-	http.Redirect(w, r, fmt.Sprintf("http://%s:%d/?t=%d", tailscaleIP, port, time.Now().UnixNano()), http.StatusFound)
+	// Redirect to ttyd with credentials in URL (browser will prompt for auth and cache it)
+	// Format: http://user:pass@host:port/
+	http.Redirect(w, r, fmt.Sprintf("http://t:%s@%s:%d/?t=%d", password, tailscaleIP, port, time.Now().UnixNano()), http.StatusFound)
 }
 
 // Get directory for a project by checking existing sessions
@@ -660,12 +668,12 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Start ttyd and redirect directly to it
-	port, err := startTtyd(session)
+	port, password, err := startTtyd(session)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, fmt.Sprintf("http://%s:%d/?t=%d", tailscaleIP, port, time.Now().UnixNano()), http.StatusFound)
+	http.Redirect(w, r, fmt.Sprintf("http://t:%s@%s:%d/?t=%d", password, tailscaleIP, port, time.Now().UnixNano()), http.StatusFound)
 }
 
 func handleKill(w http.ResponseWriter, r *http.Request) {
@@ -775,10 +783,10 @@ func handleSpawnProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Start ttyd and redirect directly to it
-	port, err := startTtyd(session)
+	port, password, err := startTtyd(session)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, fmt.Sprintf("http://%s:%d/?t=%d", tailscaleIP, port, time.Now().UnixNano()), http.StatusFound)
+	http.Redirect(w, r, fmt.Sprintf("http://t:%s@%s:%d/?t=%d", password, tailscaleIP, port, time.Now().UnixNano()), http.StatusFound)
 }
