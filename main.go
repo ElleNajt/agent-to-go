@@ -22,9 +22,8 @@ import (
 
 // Track running ttyd instances
 type ttydInstance struct {
-	port     int
-	cmd      *exec.Cmd
-	password string // random password for basic auth
+	port int
+	cmd  *exec.Cmd
 }
 
 // Config for spawn restrictions
@@ -262,14 +261,14 @@ func getTmuxSessions() ([]string, error) {
 	return sessions, nil
 }
 
-// Start ttyd for a session, return port and password for basic auth
-func startTtyd(session string) (int, string, error) {
+// Start ttyd for a session, return port
+func startTtyd(session string) (int, error) {
 	portMutex.Lock()
 	defer portMutex.Unlock()
 
 	// Already running?
 	if inst, ok := ttydInstances[session]; ok {
-		return inst.port, inst.password, nil
+		return inst.port, nil
 	}
 
 	// Reuse a free port or allocate a new one
@@ -279,28 +278,22 @@ func startTtyd(session string) (int, string, error) {
 		freePorts = freePorts[:len(freePorts)-1]
 	} else {
 		if nextPort > 65535 {
-			return 0, "", fmt.Errorf("no ports available")
+			return 0, fmt.Errorf("no ports available")
 		}
 		port = nextPort
 		nextPort++
 	}
 
-	// Generate random password for this ttyd instance
-	// This protects against cross-origin WebSocket attacks - browser won't send credentials cross-origin
-	pwdBytes := make([]byte, 16)
-	rand.Read(pwdBytes)
-	password := hex.EncodeToString(pwdBytes)
-	credential := "t:" + password // username is just "t", password is random
-
 	// Bind ttyd to Tailscale IP only, with larger font for mobile
-	// -c: require basic auth (protects against cross-origin attacks since browser won't send credentials)
-	// -O: also check Origin header (defense in depth for future browser behavior changes)
-	cmd := exec.Command("ttyd", "-i", tailscaleIP, "-p", fmt.Sprintf("%d", port), "-W", "-O", "-c", credential, "-t", "fontSize=32", "tmux", "attach", "-t", session)
+	// -O: check Origin header (prevents cross-origin WebSocket connections)
+	// No -c (basic auth) — browsers block user:pass@host URLs, making auto-login impossible.
+	// Security relies on: Tailscale network, Host header validation, CSRF, Origin checks, ttyd -O.
+	cmd := exec.Command("ttyd", "-i", tailscaleIP, "-p", fmt.Sprintf("%d", port), "-W", "-O", "-t", "fontSize=32", "tmux", "attach", "-t", session)
 	if err := cmd.Start(); err != nil {
-		return 0, "", err
+		return 0, err
 	}
 
-	ttydInstances[session] = &ttydInstance{port: port, cmd: cmd, password: password}
+	ttydInstances[session] = &ttydInstance{port: port, cmd: cmd}
 
 	// Wait in background to avoid zombie processes and clean up on exit
 	go func() {
@@ -333,10 +326,10 @@ func startTtyd(session string) (int, string, error) {
 		// Lock is already held via defer, so just clean up directly.
 		delete(ttydInstances, session)
 		freePorts = append(freePorts, port)
-		return 0, "", fmt.Errorf("ttyd failed to start on port %d", port)
+		return 0, fmt.Errorf("ttyd failed to start on port %d", port)
 	}
 
-	return port, password, nil
+	return port, nil
 }
 
 // Group sessions by project directory (from AGENT_TMUX_DIR env var)
@@ -540,52 +533,6 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveAuthBridge serves an intermediate page that navigates to the ttyd URL
-// with credentials. Uses location.replace() so the credentialed URL does not
-// appear in browser history (replace overwrites the current history entry).
-// The Referrer-Policy header prevents the URL from leaking via Referer headers.
-func serveAuthBridge(w http.ResponseWriter, password string, port int) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-
-	tmpl := template.Must(template.New("bridge").Parse(`<!DOCTYPE html>
-<html>
-<head>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="referrer" content="no-referrer">
-    <title>Connecting...</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-        }
-    </style>
-</head>
-<body>
-    <div style="font-size: 18px;">Connecting to terminal...</div>
-    <script>
-        // replace() avoids leaving the credentialed URL in browser history
-        window.location.replace("http://t:{{.Password}}@{{.Host}}:{{.Port}}/");
-    </script>
-</body>
-</html>`))
-
-	if err := tmpl.Execute(w, map[string]interface{}{
-		"Host":     tailscaleIP,
-		"Port":     port,
-		"Password": password,
-	}); err != nil {
-		log.Printf("template execute error: %v", err)
-	}
-}
-
 func handleConnect(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 
@@ -623,14 +570,14 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	port, password, err := startTtyd(session)
+	port, err := startTtyd(session)
 	if err != nil {
 		log.Printf("startTtyd error for session %q: %v", session, err)
 		http.Error(w, "failed to start terminal", http.StatusInternalServerError)
 		return
 	}
 
-	serveAuthBridge(w, password, port)
+	http.Redirect(w, r, fmt.Sprintf("http://%s:%d/", tailscaleIP, port), http.StatusFound)
 }
 
 // Get directory for a project by checking existing sessions
@@ -758,13 +705,13 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Start ttyd and redirect directly to it
-	port, password, err := startTtyd(session)
+	port, err := startTtyd(session)
 	if err != nil {
 		log.Printf("startTtyd error for session %q: %v", session, err)
 		http.Error(w, "failed to start terminal", http.StatusInternalServerError)
 		return
 	}
-	serveAuthBridge(w, password, port)
+	http.Redirect(w, r, fmt.Sprintf("http://%s:%d/", tailscaleIP, port), http.StatusFound)
 }
 
 func handleKill(w http.ResponseWriter, r *http.Request) {
@@ -879,11 +826,11 @@ func handleSpawnProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Start ttyd and redirect directly to it
-	port, password, err := startTtyd(session)
+	port, err := startTtyd(session)
 	if err != nil {
 		log.Printf("startTtyd error for session %q: %v", session, err)
 		http.Error(w, "failed to start terminal", http.StatusInternalServerError)
 		return
 	}
-	serveAuthBridge(w, password, port)
+	http.Redirect(w, r, fmt.Sprintf("http://%s:%d/", tailscaleIP, port), http.StatusFound)
 }

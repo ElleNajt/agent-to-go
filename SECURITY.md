@@ -20,7 +20,7 @@ Phone (browser)
 agent-to-go :8090 (bound to Tailscale IP only)
   |
   |-- GET  /              Index page (lists sessions, renders CSRF token)
-  |-- POST /connect/{s}   Start ttyd for session, serve auth bridge
+  |-- POST /connect/{s}   Start ttyd for session, redirect to it
   |-- POST /spawn         Create new tmux session + ttyd
   |-- POST /spawn-project Same, resolved from existing project
   |-- POST /kill/{s}      Kill a tmux session
@@ -28,7 +28,7 @@ agent-to-go :8090 (bound to Tailscale IP only)
   v
 ttyd :7700+ (one per active session, bound to Tailscale IP)
   |
-  | WebSocket + basic auth
+  | WebSocket (Origin-checked via -O)
   |
   v
 tmux session (persistent terminal)
@@ -75,16 +75,13 @@ The spawn endpoints require commands and directories to be in an explicit allowl
 - **Commands:** Exact string match. `"bash -c evil"` does not match `"bash"`.
 - **Directories:** Resolved to absolute paths with symlinks followed (`filepath.EvalSymlinks`). Path traversal via `../` is normalized before checking. Symlinks inside allowed directories that point outside are rejected.
 
-### 7. ttyd per-session auth
+### 7. ttyd origin checking
 
-Each ttyd instance gets a random password (16 bytes from `crypto/rand`, 128 bits). ttyd is started with:
-- `-c t:PASSWORD` — basic auth required
+Each ttyd instance is started with:
 - `-O` — origin header checking (rejects cross-origin WebSocket connections)
 - `-i TAILSCALE_IP` — bound to Tailscale interface only
 
-The auth bridge page uses `window.location.replace()` to navigate to ttyd, which avoids leaving the credentialed URL in browser history. `Referrer-Policy: no-referrer` prevents credential leakage via Referer headers.
-
-**Limitation:** The `user:password@host` URL format is the only way to pass credentials for basic auth without a browser prompt. Some browsers may still expose this in the address bar or through extensions. The password is per-session and random, limiting the blast radius.
+No basic auth (`-c`) is used — modern browsers block `user:pass@host` URLs, making auto-login impossible. Security relies on Tailscale network binding, Host header validation, CSRF, Origin checks, and ttyd's own `-O` flag.
 
 ### 8. Argument injection prevention
 
@@ -104,10 +101,6 @@ All error responses return generic messages (`"access denied"`, `"failed to star
 
 The orphaned ttyd cleanup goroutine (`cleanupOrphanedTtyd`) calls `Process.Kill()` then `cmd.Wait()` while holding `portMutex`. Since `Kill` sends SIGKILL, `Wait` returns promptly. If it didn't (kernel bug, zombie process issues), it would block all `startTtyd` calls. In practice this hasn't been an issue.
 
-### Port reuse
-
-When a ttyd instance exits, its port is reclaimed for future sessions. Each new session gets a fresh random password, so stale credentials from a previous session won't authenticate to the new one.
-
 ### tmux runs commands through sh -c
 
 When `spawnSession` calls `tmux new-session ... -- cmd`, tmux passes `cmd` through `sh -c`. Since the command is validated against an exact-match allowlist containing only simple command names, this is not exploitable. But if the allowlist were to contain a command name with shell metacharacters, tmux would interpret them.
@@ -115,10 +108,6 @@ When `spawnSession` calls `tmux new-session ... -- cmd`, tmux passes `cmd` throu
 ### Catch-all route
 
 `http.HandleFunc("/", handleIndex)` makes the index page a catch-all — any unmatched path returns the full index page. This means there are no 404 responses. This is harmless since the index page is read-only, but it also means any path serves the CSRF token. If `net/http/pprof` were ever imported (even transitively), its `init()` would register debug handlers on `DefaultServeMux`, exposing heap profiles and goroutine dumps. Currently safe since pprof is not imported.
-
-### Password in JavaScript context
-
-The auth bridge page renders the ttyd password inside a `<script>` tag using `html/template`. Since passwords are hex-encoded (`[0-9a-f]` only), there's no risk of JavaScript injection. If the password format ever changed to include characters like `"`, `\`, or `</`, this would need JS-specific escaping.
 
 ### DNS rebinding
 
