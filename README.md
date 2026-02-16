@@ -13,8 +13,8 @@ Access terminal sessions from your phone's browser. Works with Claude Code, Code
 ## How it works
 
 1. Alias your command to run inside tmux (e.g., `alias claude='agent-tmux claude'`)
-2. Run `agent-phone` on your server - it lists all tmux sessions on a web page
-3. Open the picker from your phone and tap a session to connect via ttyd
+2. Run `agent-to-go` on your server - it lists all tmux sessions on a web page
+3. Open the picker from your phone and tap a session to connect
 4. Full terminal in your phone browser - same session as your computer
 
 ## Architecture
@@ -33,16 +33,16 @@ Access terminal sessions from your phone's browser. Works with Claude Code, Code
 │         │                   │                                   │
 │  ┌──────┴──────┐     ┌──────┴──────┐                           │
 │  │    ttyd     │     │    ttyd     │  (spawned on demand)      │
-│  │   :7700     │     │   :7701     │                           │
+│  │  127.0.0.1  │     │  127.0.0.1  │  (localhost only)        │
 │  └──────▲──────┘     └──────▲──────┘                           │
 │         │                   │                                   │
 │         └────────┬──────────┘                                   │
-│                  │                                              │
+│                  │ reverse proxy                                │
 │           ┌──────┴──────┐                                       │
-│           │ agent-phone │  HTTP server                          │
+│           │ agent-to-go │  HTTP server                          │
 │           │    :8090    │  - lists sessions                     │
-│           │             │  - spawns ttyd on connect             │
-│           └──────▲──────┘  - redirects to ttyd                  │
+│           │             │  - reverse proxies ttyd               │
+│           └──────▲──────┘  - Host header validation             │
 │                  │                                              │
 │                  │ bound to Tailscale IP only                   │
 └──────────────────┼──────────────────────────────────────────────┘
@@ -184,8 +184,15 @@ If you're already inside tmux, it creates a detached session and switches to it.
 
 **What's protected:**
 
-- No binding to public interfaces (refuses to start if Tailscale unavailable)
+- Server bound to Tailscale IP only (refuses to start if Tailscale unavailable)
+- ttyd instances bound to localhost, accessed via reverse proxy
+- CSRF tokens on all state-changing endpoints
+- Host header validation blocks DNS rebinding attacks
+- Origin validation blocks cross-origin POST requests
+- Command/directory allowlists for spawning sessions
 - Orphaned ttyd processes cleaned up automatically
+
+See [SECURITY.md](SECURITY.md) for the full security model.
 
 **What's NOT protected:**
 

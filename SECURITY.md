@@ -19,16 +19,19 @@ Phone (browser)
   v
 agent-to-go :8090 (bound to Tailscale IP only)
   |
-  |-- GET  /              Index page (lists sessions, renders CSRF token)
-  |-- POST /connect/{s}   Start ttyd for session, redirect to it
-  |-- POST /spawn         Create new tmux session + ttyd
-  |-- POST /spawn-project Same, resolved from existing project
-  |-- POST /kill/{s}      Kill a tmux session
+  |-- GET  /                 Index page (lists sessions, renders CSRF token)
+  |-- POST /connect/{s}      Start ttyd, redirect to /terminal/{s}/
+  |-- GET  /terminal/{s}/*   Reverse proxy to ttyd (HTTP + WebSocket)
+  |-- POST /spawn            Create new tmux session + ttyd
+  |-- POST /spawn-project    Same, resolved from existing project
+  |-- POST /kill/{s}         Kill a tmux session
+  |
+  | reverse proxy (Host header validated)
   |
   v
-ttyd :7700+ (one per active session, bound to Tailscale IP)
+ttyd :7700+ (one per active session, bound to 127.0.0.1 only)
   |
-  | WebSocket (Origin-checked via -O)
+  | WebSocket
   |
   v
 tmux session (persistent terminal)
@@ -38,9 +41,7 @@ tmux session (persistent terminal)
 
 ### 1. Network binding (primary boundary)
 
-The Go server and all ttyd instances bind exclusively to the Tailscale IP. If Tailscale is unavailable, the server refuses to start (`log.Fatal`). This is the main security boundary.
-
-**Not protected against:** A compromised process on the same machine can reach the Tailscale IP via localhost routing.
+The Go server binds exclusively to the Tailscale IP. ttyd instances bind to `127.0.0.1` (localhost only), making them unreachable from the network — all access goes through the reverse proxy. If Tailscale is unavailable, the server refuses to start (`log.Fatal`). This is the main security boundary.
 
 ### 2. CSRF protection
 
@@ -75,13 +76,11 @@ The spawn endpoints require commands and directories to be in an explicit allowl
 - **Commands:** Exact string match. `"bash -c evil"` does not match `"bash"`.
 - **Directories:** Resolved to absolute paths with symlinks followed (`filepath.EvalSymlinks`). Path traversal via `../` is normalized before checking. Symlinks inside allowed directories that point outside are rejected.
 
-### 7. ttyd origin checking
+### 7. Reverse proxy isolation
 
-Each ttyd instance is started with:
-- `-O` — origin header checking (rejects cross-origin WebSocket connections)
-- `-i TAILSCALE_IP` — bound to Tailscale interface only
+ttyd instances bind to `127.0.0.1` and are not directly reachable from the network. All browser traffic goes through the `/terminal/{session}/` reverse proxy, which inherits the Host header middleware (layer 3). This closes the DNS rebinding attack path against ttyd — an attacker who rebinds to the Tailscale IP cannot reach ttyd ports, and requests through the main server are rejected by Host validation.
 
-No basic auth (`-c`) is used — modern browsers block `user:pass@host` URLs, making auto-login impossible. Security relies on Tailscale network binding, Host header validation, CSRF, Origin checks, and ttyd's own `-O` flag.
+The reverse proxy handles both regular HTTP requests and WebSocket upgrades (used by ttyd for terminal I/O).
 
 ### 8. Argument injection prevention
 
@@ -111,7 +110,7 @@ When `spawnSession` calls `tmux new-session ... -- cmd`, tmux passes `cmd` throu
 
 ### DNS rebinding
 
-DNS rebinding is blocked by Host header validation (layer 3). After rebinding, the browser sends `Host: evil.com`, which the middleware rejects before any handler runs. Even if Host validation were bypassed, the attacker would still need to pass Origin validation on POSTs — the browser sends `Origin: http://evil.com`, not your Tailscale IP.
+DNS rebinding is blocked at two layers. First, Host header validation (layer 3) rejects requests where `Host` doesn't match the Tailscale IP — after rebinding, the browser sends `Host: evil.com`, which is rejected before any handler runs. Second, ttyd instances bind to `127.0.0.1` (layer 7), so even if Host validation were bypassed, the attacker cannot reach ttyd ports directly from the network. All terminal access must go through the reverse proxy on port 8090.
 
 ### Readiness poll holds mutex
 

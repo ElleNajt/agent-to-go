@@ -6,10 +6,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	mathrand "math/rand"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -190,6 +193,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleIndex)
 	mux.HandleFunc("/connect/", handleConnect)
+	mux.HandleFunc("/terminal/", handleTerminal)
 	mux.HandleFunc("/spawn", handleSpawn)
 	mux.HandleFunc("/spawn-project", handleSpawnProject)
 	mux.HandleFunc("/kill/", handleKill)
@@ -284,11 +288,10 @@ func startTtyd(session string) (int, error) {
 		nextPort++
 	}
 
-	// Bind ttyd to Tailscale IP only, with larger font for mobile
-	// -O: check Origin header (prevents cross-origin WebSocket connections)
-	// No -c (basic auth) — browsers block user:pass@host URLs, making auto-login impossible.
-	// Security relies on: Tailscale network, Host header validation, CSRF, Origin checks, ttyd -O.
-	cmd := exec.Command("ttyd", "-i", tailscaleIP, "-p", fmt.Sprintf("%d", port), "-W", "-O", "-t", "fontSize=32", "tmux", "attach", "-t", session)
+	// Bind ttyd to localhost only — unreachable from the network.
+	// All access goes through our reverse proxy at /terminal/{session}/, which
+	// enforces Host header validation (blocking DNS rebinding).
+	cmd := exec.Command("ttyd", "-i", "127.0.0.1", "-p", fmt.Sprintf("%d", port), "-W", "-t", "fontSize=32", "tmux", "attach", "-t", session)
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
@@ -309,7 +312,7 @@ func startTtyd(session string) (int, error) {
 	log.Printf("Started ttyd for session %q on port %d", session, port)
 
 	// Wait for ttyd to be ready (up to 2 seconds)
-	addr := fmt.Sprintf("%s:%d", tailscaleIP, port)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	ready := false
 	for i := 0; i < 20; i++ {
 		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
@@ -533,6 +536,97 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleTerminal reverse-proxies requests to the local ttyd instance.
+// Browser hits /terminal/{session}/* -> we forward to 127.0.0.1:{port}/*
+// This keeps ttyd off the network while our middleware validates Host headers.
+func handleTerminal(w http.ResponseWriter, r *http.Request) {
+	// Extract session name: /terminal/{session}/rest/of/path
+	path := strings.TrimPrefix(r.URL.Path, "/terminal/")
+	slash := strings.Index(path, "/")
+	var session, rest string
+	if slash >= 0 {
+		session = path[:slash]
+		rest = path[slash:] // includes leading /
+	} else {
+		session = path
+		rest = "/"
+	}
+
+	if session == "" {
+		http.Error(w, "no session specified", http.StatusBadRequest)
+		return
+	}
+
+	// Look up the ttyd port for this session
+	portMutex.Lock()
+	inst, ok := ttydInstances[session]
+	portMutex.Unlock()
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", inst.port))
+
+	// WebSocket upgrade — proxy bidirectionally
+	if r.Header.Get("Upgrade") == "websocket" {
+		proxyWebSocket(w, r, target.Host, rest)
+		return
+	}
+
+	// Regular HTTP — use standard reverse proxy
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+			req.URL.Path = rest
+			req.Host = target.Host
+		},
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+// proxyWebSocket dials the backend ttyd WebSocket and pipes data both ways.
+func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendHost, path string) {
+	// Hijack the client connection
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "websocket proxy unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	// Connect to backend
+	backendConn, err := net.Dial("tcp", backendHost)
+	if err != nil {
+		http.Error(w, "backend unavailable", http.StatusBadGateway)
+		return
+	}
+	defer backendConn.Close()
+
+	// Forward the original HTTP upgrade request to backend
+	// Rewrite the request path and Host, keep all other headers (Upgrade, Sec-WebSocket-*, etc.)
+	r.URL.Path = path
+	r.Host = backendHost
+	r.Header.Set("Host", backendHost)
+	if err := r.Write(backendConn); err != nil {
+		http.Error(w, "backend write failed", http.StatusBadGateway)
+		return
+	}
+
+	// Hijack the client connection
+	clientConn, _, err := hj.Hijack()
+	if err != nil {
+		return
+	}
+	defer clientConn.Close()
+
+	// Bidirectional pipe
+	done := make(chan struct{}, 2)
+	go func() { io.Copy(backendConn, clientConn); done <- struct{}{} }()
+	go func() { io.Copy(clientConn, backendConn); done <- struct{}{} }()
+	<-done
+}
+
 func handleConnect(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 
@@ -570,14 +664,14 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	port, err := startTtyd(session)
+	_, err = startTtyd(session)
 	if err != nil {
 		log.Printf("startTtyd error for session %q: %v", session, err)
 		http.Error(w, "failed to start terminal", http.StatusInternalServerError)
 		return
 	}
 
-	http.Redirect(w, r, fmt.Sprintf("http://%s:%d/", tailscaleIP, port), http.StatusFound)
+	http.Redirect(w, r, fmt.Sprintf("/terminal/%s/", session), http.StatusFound)
 }
 
 // Get directory for a project by checking existing sessions
@@ -704,14 +798,14 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start ttyd and redirect directly to it
-	port, err := startTtyd(session)
+	// Start ttyd and redirect to our reverse proxy
+	_, err = startTtyd(session)
 	if err != nil {
 		log.Printf("startTtyd error for session %q: %v", session, err)
 		http.Error(w, "failed to start terminal", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, fmt.Sprintf("http://%s:%d/", tailscaleIP, port), http.StatusFound)
+	http.Redirect(w, r, fmt.Sprintf("/terminal/%s/", session), http.StatusFound)
 }
 
 func handleKill(w http.ResponseWriter, r *http.Request) {
@@ -825,12 +919,12 @@ func handleSpawnProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start ttyd and redirect directly to it
-	port, err := startTtyd(session)
+	// Start ttyd and redirect to our reverse proxy
+	_, err = startTtyd(session)
 	if err != nil {
 		log.Printf("startTtyd error for session %q: %v", session, err)
 		http.Error(w, "failed to start terminal", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, fmt.Sprintf("http://%s:%d/", tailscaleIP, port), http.StatusFound)
+	http.Redirect(w, r, fmt.Sprintf("/terminal/%s/", session), http.StatusFound)
 }
