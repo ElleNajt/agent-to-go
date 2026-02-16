@@ -624,6 +624,71 @@ func TestAttack_DNSRebinding(t *testing.T) {
 	}
 }
 
+// Attack: DNS rebinding to read CSRF token from index page
+func TestAttack_DNSRebindingReadCSRF(t *testing.T) {
+	// After DNS rebinding, browser sends Host: evil.com but request goes to our server.
+	// The host check middleware should block this, preventing the attacker from
+	// even reading the index page (and extracting the CSRF token).
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Host = "evil.com:8090" // DNS rebound host
+
+	w := httptest.NewRecorder()
+	hostCheckMiddleware(http.HandlerFunc(handleIndex)).ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("ATTACK SUCCEEDED: DNS rebinding read returned %d, expected 403", w.Code)
+	}
+	if strings.Contains(w.Body.String(), csrfToken) {
+		t.Error("ATTACK SUCCEEDED: CSRF token leaked despite host check")
+	}
+}
+
+// Verify host check allows legitimate requests
+func TestHostCheckAllowsTailscaleIP(t *testing.T) {
+	validHosts := []string{
+		tailscaleIP,
+		tailscaleIP + ":8090",
+	}
+
+	for _, host := range validHosts {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Host = host
+
+		w := httptest.NewRecorder()
+		hostCheckMiddleware(http.HandlerFunc(handleIndex)).ServeHTTP(w, req)
+
+		if w.Code == http.StatusForbidden {
+			t.Errorf("Host %q should be allowed, got 403", host)
+		}
+	}
+}
+
+func TestHostCheckRejectsWrongHosts(t *testing.T) {
+	badHosts := []string{
+		"evil.com",
+		"evil.com:8090",
+		"localhost",
+		"localhost:8090",
+		"127.0.0.1",
+		"127.0.0.1:8090",
+		tailscaleIP + ".evil.com",
+		"",
+	}
+
+	for _, host := range badHosts {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Host = host
+
+		w := httptest.NewRecorder()
+		hostCheckMiddleware(http.HandlerFunc(handleIndex)).ServeHTTP(w, req)
+
+		if w.Code != http.StatusForbidden {
+			t.Errorf("Host %q should be rejected, got %d", host, w.Code)
+		}
+	}
+}
+
 // Attack: Kill all sessions (DoS)
 func TestAttack_KillAllSessions(t *testing.T) {
 	// Attacker tries to kill sessions without knowing CSRF token

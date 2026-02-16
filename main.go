@@ -151,6 +151,31 @@ func validateOrigin(r *http.Request) bool {
 	return rest == "" || rest[0] == ':' || rest[0] == '/'
 }
 
+// validateHost checks that the Host header matches our Tailscale IP.
+// This blocks DNS rebinding attacks: after rebinding, the browser sends
+// Host: evil.com (the attacker's domain), not our IP. Rejecting mismatched
+// Host headers prevents the attacker from reading the index page at all,
+// so they can never extract the CSRF token.
+func validateHost(r *http.Request) bool {
+	host := r.Host
+	// Strip port if present
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return host == tailscaleIP
+}
+
+// hostCheckMiddleware wraps an http.Handler to reject requests with wrong Host headers.
+func hostCheckMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !validateHost(r) {
+			http.Error(w, "invalid host", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	mathrand.Seed(time.Now().UnixNano())
 	csrfToken = generateCSRFToken()
@@ -163,11 +188,12 @@ func main() {
 		log.Printf("Spawn disabled - no config at ~/.config/agent-to-go/config.yaml")
 	}
 
-	http.HandleFunc("/", handleIndex)
-	http.HandleFunc("/connect/", handleConnect)
-	http.HandleFunc("/spawn", handleSpawn)
-	http.HandleFunc("/spawn-project", handleSpawnProject)
-	http.HandleFunc("/kill/", handleKill)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handleIndex)
+	mux.HandleFunc("/connect/", handleConnect)
+	mux.HandleFunc("/spawn", handleSpawn)
+	mux.HandleFunc("/spawn-project", handleSpawnProject)
+	mux.HandleFunc("/kill/", handleKill)
 
 	// Get Tailscale IP - fail if unavailable (security: never bind to all interfaces)
 	out, err := exec.Command("tailscale", "ip", "-4").Output()
@@ -189,7 +215,7 @@ func main() {
 	fmt.Printf("  agent-to-go running at: %s\n", url)
 	fmt.Println("===========================================")
 	fmt.Println()
-	log.Fatal(http.ListenAndServe(addr, nil))
+	log.Fatal(http.ListenAndServe(addr, hostCheckMiddleware(mux)))
 }
 
 // Clean up ttyd instances for sessions that no longer exist

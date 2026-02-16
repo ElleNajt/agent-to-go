@@ -52,7 +52,11 @@ All state-changing endpoints (connect, spawn, kill) require a POST with a valid 
 
 This prevents cross-origin attacks where a malicious website tries to submit forms to your agent-to-go instance.
 
-### 3. Origin validation
+### 3. Host header validation (DNS rebinding defense)
+
+All requests pass through a middleware that validates the `Host` header matches the Tailscale IP. This blocks DNS rebinding attacks: after an attacker rebinds their domain to your IP, the browser sends `Host: evil.com` — which is rejected before any handler runs. The attacker can never read the index page or extract the CSRF token.
+
+### 4. Origin validation
 
 POST requests are checked against the Tailscale IP origin. Cross-origin requests (from `evil.com`, `null`, etc.) are rejected.
 
@@ -60,18 +64,18 @@ The origin is matched against the exact Tailscale IP with boundary checking — 
 
 **Limitation:** When both `Origin` and `Referer` headers are absent, the request is allowed. This is necessary because same-origin browser requests sometimes omit both. It means non-browser HTTP clients on the Tailnet can bypass origin validation. This is by design — origin validation protects against browser-based cross-origin attacks only, not against arbitrary network access (which is Tailscale's job).
 
-### 4. Session name validation
+### 5. Session name validation
 
 Session names in `/connect/` and `/kill/` are validated against the actual list of tmux sessions. Only exact matches are accepted. Since session names are passed to `exec.Command` (not a shell), command injection via session names is not possible even without this validation — but the validation provides defense in depth.
 
-### 5. Command and directory allowlists
+### 6. Command and directory allowlists
 
 The spawn endpoints require commands and directories to be in an explicit allowlist (`~/.config/agent-to-go/config.yaml`). If no config file exists, spawn is entirely disabled.
 
 - **Commands:** Exact string match. `"bash -c evil"` does not match `"bash"`.
 - **Directories:** Resolved to absolute paths with symlinks followed (`filepath.EvalSymlinks`). Path traversal via `../` is normalized before checking. Symlinks inside allowed directories that point outside are rejected.
 
-### 6. ttyd per-session auth
+### 7. ttyd per-session auth
 
 Each ttyd instance gets a random password (16 bytes from `crypto/rand`, 128 bits). ttyd is started with:
 - `-c t:PASSWORD` — basic auth required
@@ -82,7 +86,7 @@ The auth bridge page uses `window.location.replace()` to navigate to ttyd, which
 
 **Limitation:** The `user:password@host` URL format is the only way to pass credentials for basic auth without a browser prompt. Some browsers may still expose this in the address bar or through extensions. The password is per-session and random, limiting the blast radius.
 
-### 7. Argument injection prevention
+### 8. Argument injection prevention
 
 All `tmux` and `ttyd` commands use `exec.Command` (no shell invocation) and include `--` before user-influenced arguments to prevent flag injection.
 
@@ -118,7 +122,7 @@ The auth bridge page renders the ttyd password inside a `<script>` tag using `ht
 
 ### DNS rebinding
 
-An attacker using DNS rebinding can make requests to your server from their JavaScript (by rebinding their domain to your Tailscale IP). They can read the index page and extract the CSRF token. However, the `Origin` header will still show the attacker's domain, so POST requests are blocked by origin validation. The combination of CSRF + origin check holds against DNS rebinding.
+DNS rebinding is blocked by Host header validation (layer 3). After rebinding, the browser sends `Host: evil.com`, which the middleware rejects before any handler runs. Even if Host validation were bypassed, the attacker would still need to pass Origin validation on POSTs — the browser sends `Origin: http://evil.com`, not your Tailscale IP.
 
 ### Readiness poll holds mutex
 
@@ -129,6 +133,7 @@ The `startTtyd` readiness loop (polling TCP for up to 2 seconds) runs while hold
 The test suite (`main_test.go`) includes:
 
 - **Security property tests:** CSRF required on all endpoints, constant-time comparison, origin rejection, POST-only enforcement, session validation
-- **Attack simulations:** Cross-site reverse shell, IP spray, hidden form CSRF, img tag GET, clickjacking, DNS rebinding, session kill DoS, stolen CSRF + wrong origin, null origin, WebSocket hijacking, origin IP prefix attack
+- **Attack simulations:** Cross-site reverse shell, IP spray, hidden form CSRF, img tag GET, clickjacking, DNS rebinding (POST and GET/read), session kill DoS, stolen CSRF + wrong origin, null origin, WebSocket hijacking, origin IP prefix attack
 - **Allowlist tests:** Command/directory rejection, subdirectory allowance, path traversal blocking, reverse shell blocking, spawn-disabled-without-config, symlink bypass prevention
 - **Origin validation:** Exact IP boundary checking, prefix attack rejection, port and path suffixes
+- **Host validation:** Tailscale IP accepted (with/without port), evil domains rejected, localhost rejected, IP prefix domains rejected
