@@ -5,8 +5,8 @@ Access terminal sessions from your phone's browser. Works with Claude Code, or a
 ## How it works
 
 1. Alias your command to run inside tmux (e.g., `alias claude='agent-tmux claude'`)
-2. A web picker lists all tmux sessions
-3. Tap a session to connect via ttyd
+2. Run `agent-phone` on your server - it lists all tmux sessions on a web page
+3. Open the picker from your phone and tap a session to connect via ttyd
 4. Full terminal in your phone browser - same session as your computer
 
 ## Requirements
@@ -21,55 +21,135 @@ Access terminal sessions from your phone's browser. Works with Claude Code, or a
 ```bash
 # Install dependencies
 # macOS
-brew install tmux ttyd
+brew install tmux ttyd tailscale
 
 # NixOS
-nix-shell -p tmux ttyd
+nix-shell -p tmux ttyd tailscale
 
 # Ubuntu/Debian
-apt install tmux ttyd
+apt install tmux
+# ttyd: see https://github.com/tsl0922/ttyd#installation
 
 # Build the picker
 go build -o agent-phone .
 
 # Copy agent-tmux to your PATH
-cp agent-tmux ~/.local/bin/  # or /usr/local/bin
+cp agent-tmux ~/.local/bin/
+chmod +x ~/.local/bin/agent-tmux
 ```
 
-## Usage
-
-**Start the picker** (run on your server/computer):
+Make sure `~/.local/bin` is in your PATH. Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-./agent-phone
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Opens on port 8090, bound to Tailscale IP only.
+## Setup
 
-**Alias commands to always use tmux**:
+### 1. Configure aliases
 
 Add to your shell config (`~/.bashrc`, `~/.zshrc`, etc.):
 
 ```bash
 alias claude='agent-tmux claude'
 alias aider='agent-tmux aider'
-# etc.
+# any other CLI tools you want phone access to
 ```
 
-Now every `claude` command automatically runs in a tmux session with a name like `claude-myproject-swift-oak`.
+Now every `claude` command runs in a tmux session with a name like `claude-myproject-swift-oak`.
 
-**Connect from phone**:
+### 2. Start the picker
 
-Open `http://<tailscale-ip>:8090` in your phone browser. Tap a session to connect.
+Run on your server/computer (the machine where you run your CLI tools):
+
+```bash
+./agent-phone
+```
+
+It binds to port 8090 on your Tailscale IP. You'll see output like:
+
+```
+Agent Phone picker running on http://100.x.x.x:8090
+```
+
+### 3. Connect from phone
+
+1. Make sure your phone is on Tailscale
+2. Open `http://<tailscale-ip>:8090` in your phone browser
+3. You'll see a list of tmux sessions
+4. Tap a session to connect
+
+### Running as a service (optional)
+
+To keep agent-phone running after logout, create a systemd service:
+
+```bash
+# ~/.config/systemd/user/agent-phone.service
+[Unit]
+Description=Agent Phone - tmux session picker
+After=network.target tailscaled.service
+
+[Service]
+ExecStart=/path/to/agent-phone
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+
+Then:
+
+```bash
+systemctl --user enable agent-phone
+systemctl --user start agent-phone
+```
+
+## How agent-tmux works
+
+When you run `agent-tmux claude`:
+
+1. Generates a unique session name: `claude-<project>-<adjective>-<noun>`
+2. Creates a new tmux session running your command
+3. Attaches you to that session
+
+If you're already inside tmux, it creates a detached session and switches to it.
 
 ## Security
 
-- Picker binds to Tailscale IP only - not accessible from public internet or local network
+- Picker binds to Tailscale IP only - not accessible from public internet
 - Only devices on your Tailscale network can connect
-- ttyd sessions spawned on ports 7700+
+- ttyd instances spawn on ports 7700+ (also bound to Tailscale IP)
+- No authentication beyond Tailscale - anyone on your tailnet can access
 
 ## Troubleshooting
 
-**macOS firewall blocking ttyd**: Add `/opt/homebrew/bin/ttyd` to allowed apps in System Settings → Network → Firewall → Options.
+**"open terminal failed: not a terminal"**
 
-**Sessions not showing**: Make sure you have the alias set up so commands run through `agent-tmux`.
+This happens when tmux can't allocate a TTY. Make sure you're running from an interactive terminal, not a script or SSH without `-t`.
+
+**macOS firewall blocking ttyd**
+
+Add ttyd to allowed apps: System Settings -> Network -> Firewall -> Options -> Add `/opt/homebrew/bin/ttyd`.
+
+**Sessions not showing**
+
+- Make sure tmux sessions exist: `tmux list-sessions`
+- Check that you're using the alias so commands run through `agent-tmux`
+
+**ttyd not connecting**
+
+- Check ttyd is running: `ps aux | grep ttyd`
+- Verify it's bound to the right IP: should be your Tailscale IP, not localhost
+- Clear stale tmux sockets if needed: `rm -rf /tmp/tmux-*` then retry
+
+**"server exited unexpectedly" from tmux**
+
+Clear stale tmux sockets:
+
+```bash
+rm -rf /tmp/tmux-*
+```
+
+## License
+
+MIT
