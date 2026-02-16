@@ -2,9 +2,9 @@
 
 A minimal, security-conscious way to access terminal sessions from your phone's browser. Works with Claude Code, Codex, aider, or any CLI tool.
 
-No bells and whistles — just a session picker, a reverse proxy to ttyd, and layered defenses against browser-based attacks (CSRF, DNS rebinding, clickjacking, origin validation). See [SECURITY.md](SECURITY.md) for the full threat model.
+A session picker, a reverse proxy to ttyd, and layered defenses against browser-based attacks (CSRF, DNS rebinding, clickjacking, origin validation). ~730 lines of Go. See [SECURITY.md](SECURITY.md) for the full threat model.
 
-**Warning:** This allows your phone to control your computer through your Tailnet. Review the code and security model if you're nervous, and please contact me if you find any issues. <3 Consider running on a dedicated coding VM rather than a machine with important secrets.
+**Warning:** This gives your phone full terminal access to your computer through your Tailnet. Review the code and security model before trusting it, and please contact me if you find any issues. <3 Consider running on a dedicated coding VM rather than a machine with important secrets.
 
 <p>
 <img src="image_on_phone.png" width="250" alt="Phone and computer showing the same Claude session">
@@ -131,6 +131,7 @@ If you're already inside tmux, it creates a detached session and switches to it.
 
 - **Single-user Tailnet** - Anyone on your Tailnet gets full terminal access. There's no authentication beyond "can reach the Tailscale IP". Don't use this if you share your Tailnet with others.
 - **Tailscale is running** - The server refuses to start without it (fail-closed). Tailscale provides encryption (WireGuard) and network-level access control.
+- **Dedicated VM recommended** - Run on a coding VM rather than your main machine. If anything goes wrong, the blast radius is limited to the VM — not your personal files, credentials, or keys. Tailscale ACLs can further restrict what the VM can access on your network.
 
 **What's protected:**
 
@@ -208,8 +209,6 @@ More feature-rich tools for accessing terminal sessions remotely:
 - [agentboard](https://github.com/gbasin/agentboard) — Agent status detection, log matching, remote SSH, mobile-optimized UI
 - [247-claude-code-remote](https://github.com/QuivrHQ/247-claude-code-remote) — Push notifications, Claude/Codex hooks, cloud VM deployment
 - [VibeTunnel](https://github.com/amantus-ai/vibetunnel) — File browser, Monaco editor, git integration, native iOS/macOS apps, session recording
-
-agent-to-go is much smaller (~730 lines of Go) and focused on the browser-attack surface rather than features.
 
 ## Troubleshooting
 

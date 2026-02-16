@@ -9,7 +9,7 @@ The CSRF, Origin, and Host header protections exist solely to defend against bro
 This means:
 - This is designed for a single-user Tailnet
 - Don't use this on a shared Tailnet where you don't trust every device
-- Consider running on a dedicated coding VM rather than a machine with important secrets
+- **Run on a dedicated coding VM** rather than your main machine. This limits the blast radius — if anything goes wrong, the attacker gets a VM with code on it, not your personal machine with credentials, keys, and personal data. Tailscale ACLs can further restrict what the VM can reach on your network.
 - If your Tailscale key is compromised, your terminals are exposed
 
 ## Architecture
@@ -113,7 +113,7 @@ When `spawnSession` calls `tmux new-session ... -- cmd`, tmux passes `cmd` throu
 
 ### Catch-all route
 
-`mux.HandleFunc("/", handleIndex)` makes the index page a catch-all — any unmatched path returns the full index page. This means there are no 404 responses. This is harmless since the index page is read-only, but it also means any path serves the CSRF token.
+`mux.HandleFunc("/", handleIndex)` makes the index page a catch-all — any unmatched path returns the full index page. This means there are no 404 responses. This has no security impact since the index page is read-only, but it also means any path serves the CSRF token.
 
 Note on pprof: Go's `net/http/pprof` package registers debug handlers on `http.DefaultServeMux` at import time. This code uses a custom `http.NewServeMux()` passed to `ListenAndServe`, so pprof handlers would never be served even if the package were imported transitively.
 
