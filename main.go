@@ -541,7 +541,13 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/connect/"+session, http.StatusFound)
+	// Start ttyd and redirect directly to it
+	port, err := startTtyd(session)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("http://%s:%d/?t=%d", tailscaleIP, port, time.Now().UnixNano()), http.StatusFound)
 }
 
 func handleKill(w http.ResponseWriter, r *http.Request) {
@@ -633,5 +639,11 @@ func handleSpawnProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/connect/"+session, http.StatusFound)
+	// Start ttyd and redirect directly to it
+	port, err := startTtyd(session)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("http://%s:%d/?t=%d", tailscaleIP, port, time.Now().UnixNano()), http.StatusFound)
 }
