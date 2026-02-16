@@ -21,7 +21,7 @@ Access terminal sessions from your phone's browser. Works with Claude Code, or a
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         Your Mac                                │
+│                       Your Computer                             │
 │                                                                 │
 │  ┌─────────────┐     ┌─────────────┐     ┌─────────────┐       │
 │  │   tmux      │     │   tmux      │     │   tmux      │       │
