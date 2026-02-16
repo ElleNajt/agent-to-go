@@ -139,9 +139,16 @@ func validateOrigin(r *http.Request) bool {
 	if origin == "" {
 		return true
 	}
-	// Must come from our own server
+	// Must come from our own server.
+	// Check that origin is exactly "http://<tailscaleIP>" optionally followed by
+	// a port (":...") or path ("/..."). This prevents "http://100.1.2.3.evil.com"
+	// from matching when tailscaleIP is "100.1.2.3".
 	allowed := "http://" + tailscaleIP
-	return strings.HasPrefix(origin, allowed)
+	if !strings.HasPrefix(origin, allowed) {
+		return false
+	}
+	rest := origin[len(allowed):]
+	return rest == "" || rest[0] == ':' || rest[0] == '/'
 }
 
 func main() {
@@ -297,10 +304,9 @@ func startTtyd(session string) (int, string, error) {
 
 	if !ready {
 		// ttyd probably failed to start (bad flag, missing binary, etc.)
-		portMutex.Lock()
+		// Lock is already held via defer, so just clean up directly.
 		delete(ttydInstances, session)
 		freePorts = append(freePorts, port)
-		portMutex.Unlock()
 		return 0, "", fmt.Errorf("ttyd failed to start on port %d", port)
 	}
 

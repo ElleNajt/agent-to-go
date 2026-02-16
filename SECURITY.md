@@ -56,6 +56,8 @@ This prevents cross-origin attacks where a malicious website tries to submit for
 
 POST requests are checked against the Tailscale IP origin. Cross-origin requests (from `evil.com`, `null`, etc.) are rejected.
 
+The origin is matched against the exact Tailscale IP with boundary checking — the character after the IP must be `:` (port), `/` (path), or end-of-string. This prevents prefix attacks where `http://100.1.2.3.evil.com` would match a Tailscale IP of `100.1.2.3`.
+
 **Limitation:** When both `Origin` and `Referer` headers are absent, the request is allowed. This is necessary because same-origin browser requests sometimes omit both. It means non-browser HTTP clients on the Tailnet can bypass origin validation. This is by design — origin validation protects against browser-based cross-origin attacks only, not against arbitrary network access (which is Tailscale's job).
 
 ### 4. Session name validation
@@ -106,10 +108,27 @@ When a ttyd instance exits, its port is reclaimed for future sessions. Each new 
 
 When `spawnSession` calls `tmux new-session ... -- cmd`, tmux passes `cmd` through `sh -c`. Since the command is validated against an exact-match allowlist containing only simple command names, this is not exploitable. But if the allowlist were to contain a command name with shell metacharacters, tmux would interpret them.
 
+### Catch-all route
+
+`http.HandleFunc("/", handleIndex)` makes the index page a catch-all — any unmatched path returns the full index page. This means there are no 404 responses. This is harmless since the index page is read-only, but it also means any path serves the CSRF token. If `net/http/pprof` were ever imported (even transitively), its `init()` would register debug handlers on `DefaultServeMux`, exposing heap profiles and goroutine dumps. Currently safe since pprof is not imported.
+
+### Password in JavaScript context
+
+The auth bridge page renders the ttyd password inside a `<script>` tag using `html/template`. Since passwords are hex-encoded (`[0-9a-f]` only), there's no risk of JavaScript injection. If the password format ever changed to include characters like `"`, `\`, or `</`, this would need JS-specific escaping.
+
+### DNS rebinding
+
+An attacker using DNS rebinding can make requests to your server from their JavaScript (by rebinding their domain to your Tailscale IP). They can read the index page and extract the CSRF token. However, the `Origin` header will still show the attacker's domain, so POST requests are blocked by origin validation. The combination of CSRF + origin check holds against DNS rebinding.
+
+### Readiness poll holds mutex
+
+The `startTtyd` readiness loop (polling TCP for up to 2 seconds) runs while holding `portMutex`. This blocks other `startTtyd` calls and the cleanup goroutine during the poll. In practice this causes at most 2 seconds of contention per ttyd startup, which is acceptable for a single-user service.
+
 ## Test coverage
 
 The test suite (`main_test.go`) includes:
 
 - **Security property tests:** CSRF required on all endpoints, constant-time comparison, origin rejection, POST-only enforcement, session validation
-- **Attack simulations:** Cross-site reverse shell, IP spray, hidden form CSRF, img tag GET, clickjacking, DNS rebinding, session kill DoS, stolen CSRF + wrong origin, null origin, WebSocket hijacking
+- **Attack simulations:** Cross-site reverse shell, IP spray, hidden form CSRF, img tag GET, clickjacking, DNS rebinding, session kill DoS, stolen CSRF + wrong origin, null origin, WebSocket hijacking, origin IP prefix attack
 - **Allowlist tests:** Command/directory rejection, subdirectory allowance, path traversal blocking, reverse shell blocking, spawn-disabled-without-config, symlink bypass prevention
+- **Origin validation:** Exact IP boundary checking, prefix attack rejection, port and path suffixes

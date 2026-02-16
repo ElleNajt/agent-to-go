@@ -161,9 +161,11 @@ func TestOriginCheckRejectsCrossOrigin(t *testing.T) {
 		"http://localhost",
 		"http://127.0.0.1:8090",
 		"http://127.0.0.1",
-		"null",                   // some browsers send this for sandboxed iframes
-		"file://",                // local file
-		"http://100.100.100.101", // similar but different IP
+		"null",                                // some browsers send this for sandboxed iframes
+		"file://",                             // local file
+		"http://100.100.100.101",              // similar but different IP
+		"http://" + tailscaleIP + ".evil.com", // IP prefix attack
+		"http://" + tailscaleIP + "x",         // IP with trailing char
 	}
 
 	for _, origin := range evilOrigins {
@@ -1039,10 +1041,14 @@ func TestValidateOriginFunction(t *testing.T) {
 	}{
 		{"http://" + tailscaleIP, "", true},
 		{"http://" + tailscaleIP + ":8090", "", true},
+		{"http://" + tailscaleIP + "/path", "", true},
 		{"", "", true}, // no origin = same-origin
 		{"https://evil.com", "", false},
 		{"", "https://evil.com/page", false},
 		{"", "http://" + tailscaleIP + "/page", true},
+		{"http://" + tailscaleIP + ".evil.com", "", false}, // IP prefix attack
+		{"http://" + tailscaleIP + "x", "", false},         // trailing char
+		{"http://" + tailscaleIP + "0", "", false},         // extra digit
 	}
 
 	for _, tc := range tests {
