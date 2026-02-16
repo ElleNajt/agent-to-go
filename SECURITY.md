@@ -25,8 +25,8 @@ agent-to-go :8090 (bound to Tailscale IP only)
   |-- GET  /                 Index page (lists sessions, renders CSRF token)
   |-- POST /connect/{s}      Start ttyd, redirect to /terminal/{s}/
   |-- GET  /terminal/{s}/*   Reverse proxy to ttyd (HTTP + WebSocket)
-  |-- POST /spawn            Create new tmux session + ttyd
-  |-- POST /spawn-project    Same, resolved from existing project
+  |-- POST /spawn            Create new tmux session + ttyd (accepts dir or project)
+  |-- POST /spawn-project    Same handler as /spawn
   |-- POST /kill/{s}         Kill a tmux session
   |
   | reverse proxy (Host header validated)
@@ -59,6 +59,8 @@ This prevents cross-origin attacks where a malicious website tries to submit for
 ### 3. Host header validation (DNS rebinding defense)
 
 All requests pass through a middleware that validates the `Host` header matches the Tailscale IP. This blocks DNS rebinding attacks: after an attacker rebinds their domain to your IP, the browser sends `Host: evil.com` — which is rejected before any handler runs. The attacker can never read the index page or extract the CSRF token.
+
+The middleware also sets `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'` on all responses to prevent clickjacking via iframes.
 
 ### 4. Origin validation
 
