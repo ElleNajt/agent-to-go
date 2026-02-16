@@ -716,8 +716,8 @@ func TestAllowlist_CommandNotAllowed(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("disallowed command 'bash': expected 403, got %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "not allowed") {
-		t.Errorf("expected 'not allowed' in response, got: %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), "access denied") {
+		t.Errorf("expected 'access denied' in response, got: %s", w.Body.String())
 	}
 }
 
@@ -756,8 +756,8 @@ func TestAllowlist_DirectoryNotAllowed(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("disallowed directory '/etc': expected 403, got %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "not allowed") {
-		t.Errorf("expected 'not allowed' in response, got: %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), "access denied") {
+		t.Errorf("expected 'access denied' in response, got: %s", w.Body.String())
 	}
 }
 
@@ -858,8 +858,8 @@ func TestAllowlist_SpawnDisabledWithoutConfig(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("spawn without config should be blocked: got %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "spawn disabled") {
-		t.Errorf("expected 'spawn disabled' message, got: %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), "access denied") {
+		t.Errorf("expected 'access denied' message, got: %s", w.Body.String())
 	}
 }
 
@@ -887,18 +887,28 @@ func TestIsCommandAllowed(t *testing.T) {
 }
 
 func TestIsDirectoryAllowed(t *testing.T) {
+	// Create a real temp directory for testing (avoids /tmp -> /private/tmp symlink issues on macOS)
+	tmpDir := t.TempDir()
+	subDir := filepath.Join(tmpDir, "subdir")
+	os.MkdirAll(subDir, 0755)
+
+	// Save and restore config
+	savedConfig := config
+	config = &Config{
+		AllowedCommands:    []string{"claude", "codex", "echo"},
+		AllowedDirectories: []string{tmpDir},
+	}
+	defer func() { config = savedConfig }()
+
 	tests := []struct {
 		dir      string
 		expected bool
 	}{
-		{"/tmp", true},
-		{"/tmp/subdir", true},
-		{"/Users/elle/code", true},
-		{"/Users/elle/code/project", true},
+		{tmpDir, true},
+		{subDir, true},
 		{"/etc", false},
 		{"/", false},
-		{"/Users/elle", false},
-		{"/tmp/../etc", false}, // traversal
+		{tmpDir + "/../etc", false}, // traversal
 	}
 
 	for _, tc := range tests {
@@ -906,6 +916,35 @@ func TestIsDirectoryAllowed(t *testing.T) {
 		if result != tc.expected {
 			t.Errorf("isDirectoryAllowed(%q) = %v, want %v", tc.dir, result, tc.expected)
 		}
+	}
+}
+
+func TestIsDirectoryAllowed_SymlinkBypass(t *testing.T) {
+	// Verify that symlinks inside an allowed directory pointing outside it are rejected
+	tmpDir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	savedConfig := config
+	config = &Config{
+		AllowedCommands:    []string{"echo"},
+		AllowedDirectories: []string{tmpDir},
+	}
+	defer func() { config = savedConfig }()
+
+	// Create a symlink inside the allowed dir pointing outside
+	symlink := filepath.Join(tmpDir, "escape")
+	if err := os.Symlink(outsideDir, symlink); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	// The symlink path looks like it's under tmpDir, but resolves outside
+	if isDirectoryAllowed(symlink) {
+		t.Errorf("symlink %q -> %q should be rejected (resolves outside allowed directory)", symlink, outsideDir)
+	}
+
+	// The allowed dir itself should still work
+	if !isDirectoryAllowed(tmpDir) {
+		t.Errorf("allowed directory %q should be accepted", tmpDir)
 	}
 }
 

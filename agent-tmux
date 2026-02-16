@@ -38,7 +38,7 @@ echo "Access from phone via agent-phone picker"
 
 # Create new tmux session with the command
 # Store working directory in tmux environment for agent-phone to read
-tmux new-session -d -s "$SESSION" -c "$PWD" "$CMD" "$@"
+tmux new-session -d -s "$SESSION" -c "$PWD" -- "$CMD" "$@"
 tmux set-environment -t "$SESSION" AGENT_TMUX_DIR "$PWD"
 tmux set-environment -t "$SESSION" AGENT_TMUX_CMD "$CMD"
 exec tmux attach -t "$SESSION"

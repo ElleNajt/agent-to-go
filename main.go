@@ -56,7 +56,7 @@ func generateCSRFToken() string {
 
 func loadConfig() *Config {
 	home, _ := os.UserHomeDir()
-	configPath := filepath.Join(home, ".config", "agent-phone", "config.yaml")
+	configPath := filepath.Join(home, ".config", "agent-to-go", "config.yaml")
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -97,16 +97,22 @@ func isDirectoryAllowed(dir string) bool {
 	if config == nil {
 		return false
 	}
-	// Resolve to absolute path
+	// Resolve to absolute path, following symlinks if the path exists
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(absDir); err == nil {
+		absDir = resolved
 	}
 	// Check if under any allowed directory
 	for _, allowed := range config.AllowedDirectories {
 		absAllowed, err := filepath.Abs(allowed)
 		if err != nil {
 			continue
+		}
+		if resolved, err := filepath.EvalSymlinks(absAllowed); err == nil {
+			absAllowed = resolved
 		}
 		// Must be exactly the allowed dir or a subdirectory
 		if absDir == absAllowed || strings.HasPrefix(absDir, absAllowed+"/") {
@@ -147,7 +153,7 @@ func main() {
 		log.Printf("Spawn enabled - allowed commands: %v", config.AllowedCommands)
 		log.Printf("Spawn enabled - allowed directories: %v", config.AllowedDirectories)
 	} else {
-		log.Printf("Spawn disabled - no config at ~/.config/agent-phone/config.yaml")
+		log.Printf("Spawn disabled - no config at ~/.config/agent-to-go/config.yaml")
 	}
 
 	http.HandleFunc("/", handleIndex)
@@ -173,7 +179,7 @@ func main() {
 	url := fmt.Sprintf("http://%s", addr)
 	fmt.Println()
 	fmt.Println("===========================================")
-	fmt.Printf("  agent-phone running at: %s\n", url)
+	fmt.Printf("  agent-to-go running at: %s\n", url)
 	fmt.Println("===========================================")
 	fmt.Println()
 	log.Fatal(http.ListenAndServe(addr, nil))
@@ -493,11 +499,59 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 </body>
 </html>`))
 
-	tmpl.Execute(w, map[string]interface{}{
+	if err := tmpl.Execute(w, map[string]interface{}{
 		"Groups":       groups,
 		"CSRFToken":    csrfToken,
 		"SpawnEnabled": config != nil,
-	})
+	}); err != nil {
+		log.Printf("template execute error: %v", err)
+	}
+}
+
+// serveAuthBridge serves an intermediate page that navigates to the ttyd URL
+// with credentials. Uses location.replace() so the credentialed URL does not
+// appear in browser history (replace overwrites the current history entry).
+// The Referrer-Policy header prevents the URL from leaking via Referer headers.
+func serveAuthBridge(w http.ResponseWriter, password string, port int) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+
+	tmpl := template.Must(template.New("bridge").Parse(`<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>Connecting...</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+    </style>
+</head>
+<body>
+    <div style="font-size: 18px;">Connecting to terminal...</div>
+    <script>
+        // replace() avoids leaving the credentialed URL in browser history
+        window.location.replace("http://t:{{.Password}}@{{.Host}}:{{.Port}}/");
+    </script>
+</body>
+</html>`))
+
+	if err := tmpl.Execute(w, map[string]interface{}{
+		"Host":     tailscaleIP,
+		"Port":     port,
+		"Password": password,
+	}); err != nil {
+		log.Printf("template execute error: %v", err)
+	}
 }
 
 func handleConnect(w http.ResponseWriter, r *http.Request) {
@@ -521,6 +575,7 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Validate session exists (also prevents injection - only real session names accepted)
 	sessions, err := getTmuxSessions()
 	if err != nil {
+		log.Printf("getTmuxSessions error: %v", err)
 		http.Error(w, "failed to list sessions", http.StatusInternalServerError)
 		return
 	}
@@ -538,13 +593,12 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	port, password, err := startTtyd(session)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("startTtyd error for session %q: %v", session, err)
+		http.Error(w, "failed to start terminal", http.StatusInternalServerError)
 		return
 	}
 
-	// Redirect to ttyd with credentials in URL (browser will prompt for auth and cache it)
-	// Format: http://user:pass@host:port/
-	http.Redirect(w, r, fmt.Sprintf("http://t:%s@%s:%d/?t=%d", password, tailscaleIP, port, time.Now().UnixNano()), http.StatusFound)
+	serveAuthBridge(w, password, port)
 }
 
 // Get directory for a project by checking existing sessions
@@ -607,7 +661,7 @@ func spawnSession(dir, cmd string) (string, error) {
 	session := generateSessionName(cmd, project)
 
 	// Create detached tmux session
-	tmux := exec.Command("tmux", "new-session", "-d", "-s", session, "-c", dir, cmd)
+	tmux := exec.Command("tmux", "new-session", "-d", "-s", session, "-c", dir, "--", cmd)
 	if err := tmux.Run(); err != nil {
 		return "", err
 	}
@@ -632,7 +686,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	// Check if spawn is enabled
 	if config == nil {
-		http.Error(w, "spawn disabled - no config file", http.StatusForbidden)
+		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
 
@@ -654,30 +708,35 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	// Validate against allowlists
 	if !isCommandAllowed(cmd) {
-		http.Error(w, fmt.Sprintf("command %q not allowed", cmd), http.StatusForbidden)
+		log.Printf("spawn rejected: command %q not allowed", cmd)
+		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
 	if !isDirectoryAllowed(dir) {
-		http.Error(w, fmt.Sprintf("directory %q not allowed", dir), http.StatusForbidden)
+		log.Printf("spawn rejected: directory %q not allowed", dir)
+		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
 
 	session, err := spawnSession(dir, cmd)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("spawnSession error: %v", err)
+		http.Error(w, "failed to spawn session", http.StatusInternalServerError)
 		return
 	}
 
 	// Start ttyd and redirect directly to it
 	port, password, err := startTtyd(session)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("startTtyd error for session %q: %v", session, err)
+		http.Error(w, "failed to start terminal", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, fmt.Sprintf("http://t:%s@%s:%d/?t=%d", password, tailscaleIP, port, time.Now().UnixNano()), http.StatusFound)
+	serveAuthBridge(w, password, port)
 }
 
 func handleKill(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != "POST" {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
@@ -696,6 +755,7 @@ func handleKill(w http.ResponseWriter, r *http.Request) {
 	// Validate session exists
 	sessions, err := getTmuxSessions()
 	if err != nil {
+		log.Printf("getTmuxSessions error: %v", err)
 		http.Error(w, "failed to list sessions", http.StatusInternalServerError)
 		return
 	}
@@ -730,7 +790,7 @@ func handleSpawnProject(w http.ResponseWriter, r *http.Request) {
 
 	// Check if spawn is enabled
 	if config == nil {
-		http.Error(w, "spawn disabled - no config file", http.StatusForbidden)
+		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
 
@@ -769,25 +829,29 @@ func handleSpawnProject(w http.ResponseWriter, r *http.Request) {
 
 	// Validate against allowlists
 	if !isCommandAllowed(cmd) {
-		http.Error(w, fmt.Sprintf("command %q not allowed", cmd), http.StatusForbidden)
+		log.Printf("spawn-project rejected: command %q not allowed", cmd)
+		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
 	if !isDirectoryAllowed(dir) {
-		http.Error(w, fmt.Sprintf("directory %q not allowed", dir), http.StatusForbidden)
+		log.Printf("spawn-project rejected: directory %q not allowed", dir)
+		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
 
 	session, err := spawnSession(dir, cmd)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("spawnSession error: %v", err)
+		http.Error(w, "failed to spawn session", http.StatusInternalServerError)
 		return
 	}
 
 	// Start ttyd and redirect directly to it
 	port, password, err := startTtyd(session)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("startTtyd error for session %q: %v", session, err)
+		http.Error(w, "failed to start terminal", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, fmt.Sprintf("http://t:%s@%s:%d/?t=%d", password, tailscaleIP, port, time.Now().UnixNano()), http.StatusFound)
+	serveAuthBridge(w, password, port)
 }
