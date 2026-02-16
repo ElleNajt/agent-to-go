@@ -1,10 +1,12 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"log"
-	"math/rand"
+	mathrand "math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -27,6 +29,7 @@ var (
 	nextPort      = 7700
 	freePorts     []int // reclaimed ports to reuse
 	tailscaleIP   string
+	csrfToken     string // generated at startup, required for POST requests
 )
 
 var (
@@ -34,8 +37,19 @@ var (
 	nouns      = []string{"otter", "panda", "fox", "rabbit", "owl", "mouse", "seal", "frog", "duck", "wren"}
 )
 
+func generateCSRFToken() string {
+	bytes := make([]byte, 32)
+	rand.Read(bytes)
+	return hex.EncodeToString(bytes)
+}
+
+func validateCSRF(r *http.Request) bool {
+	return r.FormValue("csrf") == csrfToken
+}
+
 func main() {
-	rand.Seed(time.Now().UnixNano())
+	mathrand.Seed(time.Now().UnixNano())
+	csrfToken = generateCSRFToken()
 
 	http.HandleFunc("/", handleIndex)
 	http.HandleFunc("/connect/", handleConnect)
@@ -300,6 +314,7 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
     <h1>Claude Sessions</h1>
     
     <form class="new-session" action="/spawn" method="POST">
+        <input type="hidden" name="csrf" value="{{.CSRFToken}}">
         <input name="dir" placeholder="/path/to/project" required>
         <input name="cmd" placeholder="claude" value="claude">
         <button type="submit">+ New Session</button>
@@ -310,6 +325,7 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
         <h2>
             <span>{{$project}}</span>
             <form action="/spawn/{{$project}}" method="POST" style="display:inline;margin:0;">
+                <input type="hidden" name="csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="cmd" value="claude">
                 <button type="submit" class="add-btn">+</button>
             </form>
@@ -318,6 +334,7 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
         <div class="session-row">
             <a class="session" href="/connect/{{.}}">{{.}}</a>
             <form action="/kill/{{.}}" method="POST" style="margin:0;">
+                <input type="hidden" name="csrf" value="{{$.CSRFToken}}">
                 <button type="submit" class="kill-btn">✕</button>
             </form>
         </div>
@@ -330,7 +347,8 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 </html>`))
 
 	tmpl.Execute(w, map[string]interface{}{
-		"Groups": groups,
+		"Groups":    groups,
+		"CSRFToken": csrfToken,
 	})
 }
 
@@ -403,8 +421,8 @@ func generateSessionName(cmd, project string) string {
 	}
 
 	for i := 0; i < 10; i++ {
-		adj := adjectives[rand.Intn(len(adjectives))]
-		noun := nouns[rand.Intn(len(nouns))]
+		adj := adjectives[mathrand.Intn(len(adjectives))]
+		noun := nouns[mathrand.Intn(len(nouns))]
 		name := fmt.Sprintf("%s-%s-%s-%s", cmd, project, adj, noun)
 		if !sessionSet[name] {
 			return name
@@ -447,6 +465,10 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+	if !validateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
 
 	dir := r.FormValue("dir")
 	cmd := r.FormValue("cmd")
@@ -476,6 +498,10 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 func handleKill(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if !validateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
 
@@ -513,6 +539,10 @@ func handleSpawnProject(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != "POST" {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if !validateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
 
