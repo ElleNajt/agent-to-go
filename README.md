@@ -4,7 +4,7 @@ A minimal, security-conscious way to access terminal sessions from your phone's 
 
 No bells and whistles — just a session picker, a reverse proxy to ttyd, and layered defenses against browser-based attacks (CSRF, DNS rebinding, clickjacking, origin validation). See [SECURITY.md](SECURITY.md) for the full threat model.
 
-**Warning:** This allows your phone to control your computer through your Tailnet. Review the code and security model if you're nervous. Consider running on a dedicated coding VM rather than a machine with important secrets.
+**Warning:** This allows your phone to control your computer through your Tailnet. Review the code and security model if you're nervous, and please contact me if you find any issues. <3 Consider running on a dedicated coding VM rather than a machine with important secrets.
 
 <p>
 <img src="image_on_phone.png" width="250" alt="Phone and computer showing the same Claude session">
@@ -200,6 +200,16 @@ See [SECURITY.md](SECURITY.md) for the full security model.
 | **agent-to-go** | Glue: lists sessions, spawns ttyd, handles routing |
 | **Tailscale** | Encrypted network, access control (only your devices) |
 | **agent-tmux** | Wrapper to create uniquely-named tmux sessions |
+
+## See also
+
+More feature-rich tools for accessing terminal sessions remotely:
+
+- [agentboard](https://github.com/gbasin/agentboard) — Agent status detection, log matching, remote SSH, mobile-optimized UI
+- [247-claude-code-remote](https://github.com/QuivrHQ/247-claude-code-remote) — Push notifications, Claude/Codex hooks, cloud VM deployment
+- [VibeTunnel](https://github.com/amantus-ai/vibetunnel) — File browser, Monaco editor, git integration, native iOS/macOS apps, session recording
+
+agent-to-go is intentionally minimal by comparison (~730 lines of Go). The focus is on keeping the attack surface small and the security model auditable.
 
 ## Troubleshooting
 
