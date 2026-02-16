@@ -44,7 +44,15 @@ func generateCSRFToken() string {
 }
 
 func validateCSRF(r *http.Request) bool {
-	return r.FormValue("csrf") == csrfToken
+	// Check CSRF token
+	if r.FormValue("csrf") != csrfToken {
+		return false
+	}
+	// Require custom header - browser will preflight cross-origin requests
+	if r.Header.Get("X-Requested-By") != "agent-phone" {
+		return false
+	}
+	return true
 }
 
 func main() {
@@ -71,7 +79,12 @@ func main() {
 	// Clean up orphaned ttyd processes every 30 seconds
 	go cleanupOrphanedTtyd()
 
-	log.Printf("Claude Phone picker running on http://%s", addr)
+	url := fmt.Sprintf("http://%s", addr)
+	fmt.Println()
+	fmt.Println("===========================================")
+	fmt.Printf("  agent-phone running at: %s\n", url)
+	fmt.Println("===========================================")
+	fmt.Println()
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
@@ -318,11 +331,33 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
             font-size: 14px;
         }
     </style>
+    <script>
+    function postForm(form) {
+        const formData = new URLSearchParams(new FormData(form));
+        fetch(form.action, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-Requested-By': 'agent-phone'
+            },
+            body: formData
+        }).then(resp => {
+            if (resp.redirected) {
+                window.location.href = resp.url;
+            } else if (resp.ok) {
+                window.location.reload();
+            } else {
+                resp.text().then(t => alert('Error: ' + t));
+            }
+        });
+        return false;
+    }
+    </script>
 </head>
 <body>
     <h1>Claude Sessions</h1>
     
-    <form class="new-session" action="/spawn" method="POST">
+    <form class="new-session" action="/spawn" method="POST" onsubmit="return postForm(this)">
         <input type="hidden" name="csrf" value="{{.CSRFToken}}">
         <input name="dir" placeholder="/path/to/project" required>
         <input name="cmd" placeholder="claude" value="claude">
@@ -333,7 +368,7 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
         {{range $project, $sessions := .Groups}}
         <h2>
             <span>{{$project}}</span>
-            <form action="/spawn/{{$project}}" method="POST" style="display:inline;margin:0;">
+            <form action="/spawn/{{$project}}" method="POST" style="display:inline;margin:0;" onsubmit="return postForm(this)">
                 <input type="hidden" name="csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="cmd" value="claude">
                 <button type="submit" class="add-btn">+</button>
@@ -342,7 +377,7 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
         {{range $sessions}}
         <div class="session-row">
             <a class="session" href="/connect/{{.}}">{{.}}</a>
-            <form action="/kill/{{.}}" method="POST" style="margin:0;">
+            <form action="/kill/{{.}}" method="POST" style="margin:0;" onsubmit="return postForm(this)">
                 <input type="hidden" name="csrf" value="{{$.CSRFToken}}">
                 <button type="submit" class="kill-btn">✕</button>
             </form>
