@@ -209,7 +209,7 @@ More feature-rich tools for accessing terminal sessions remotely:
 - [247-claude-code-remote](https://github.com/QuivrHQ/247-claude-code-remote) — Push notifications, Claude/Codex hooks, cloud VM deployment
 - [VibeTunnel](https://github.com/amantus-ai/vibetunnel) — File browser, Monaco editor, git integration, native iOS/macOS apps, session recording
 
-agent-to-go is intentionally minimal by comparison (~730 lines of Go). The focus is on keeping the attack surface small and the security model auditable.
+agent-to-go is much smaller (~730 lines of Go) and focused on the browser-attack surface rather than features.
 
 ## Troubleshooting
 
