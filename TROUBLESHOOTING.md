@@ -16,7 +16,7 @@ Add ttyd to allowed apps: System Settings -> Network -> Firewall -> Options -> A
 **ttyd not connecting**
 
 - Check ttyd is running: `ps aux | grep ttyd`
-- Verify it's bound to the right IP: should be your Tailscale IP, not localhost
+- Verify it's bound to localhost (127.0.0.1) — all access goes through the reverse proxy on :8090
 - Clear stale tmux sockets if needed: `rm -rf /tmp/tmux-*` then retry
 
 **"server exited unexpectedly" from tmux**

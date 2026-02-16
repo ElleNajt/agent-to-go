@@ -174,12 +174,13 @@ func hostCheckMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "invalid host", http.StatusForbidden)
 			return
 		}
+		// Prevent clickjacking — page must not be framed by other sites
+		w.Header().Set("X-Frame-Options", "DENY")
 		next.ServeHTTP(w, r)
 	})
 }
 
 func main() {
-	mathrand.Seed(time.Now().UnixNano())
 	csrfToken = generateCSRFToken()
 	config = loadConfig()
 
@@ -541,14 +542,14 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 // This keeps ttyd off the network while our middleware validates Host headers.
 func handleTerminal(w http.ResponseWriter, r *http.Request) {
 	// Extract session name: /terminal/{session}/rest/of/path
-	path := strings.TrimPrefix(r.URL.Path, "/terminal/")
-	slash := strings.Index(path, "/")
+	subpath := strings.TrimPrefix(r.URL.Path, "/terminal/")
+	slash := strings.Index(subpath, "/")
 	var session, rest string
 	if slash >= 0 {
-		session = path[:slash]
-		rest = path[slash:] // includes leading /
+		session = subpath[:slash]
+		rest = subpath[slash:] // includes leading /
 	} else {
-		session = path
+		session = subpath
 		rest = "/"
 	}
 
@@ -556,6 +557,9 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no session specified", http.StatusBadRequest)
 		return
 	}
+
+	// Clean the forwarded path to prevent traversal into unexpected ttyd paths
+	rest = filepath.Clean(rest)
 
 	// Look up the ttyd port for this session
 	portMutex.Lock()
