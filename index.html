@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Claude Sessions</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            margin: 0;
+            padding: 16px;
+        }
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+        h2 {
+            font-size: 18px;
+            color: #888;
+            margin: 24px 0 12px 0;
+            border-bottom: 1px solid #333;
+            padding-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .session {
+            display: block;
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 12px;
+            text-decoration: none;
+            color: #eee;
+            font-size: 18px;
+        }
+        .session:active {
+            background: #0f3460;
+        }
+        .session-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .session-row .session {
+            flex: 1;
+            margin-bottom: 0;
+        }
+        .kill-btn {
+            background: #4a1a1a;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-left: 8px;
+            color: #ff6b6b;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        .kill-btn:active {
+            background: #6a2a2a;
+        }
+        .empty {
+            color: #666;
+            font-style: italic;
+        }
+        .new-session {
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 24px;
+        }
+        .new-session input {
+            background: #1a1a2e;
+            border: 1px solid #0f3460;
+            border-radius: 8px;
+            padding: 12px;
+            color: #eee;
+            font-size: 16px;
+            width: 100%;
+            box-sizing: border-box;
+            margin-bottom: 8px;
+        }
+        .new-session button, .add-btn {
+            background: #0f3460;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 20px;
+            color: #eee;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        .new-session button:active, .add-btn:active {
+            background: #1a5490;
+        }
+        .add-btn {
+            padding: 4px 12px;
+            font-size: 14px;
+        }
+    </style>
+    
+</head>
+<body>
+    <h1>Claude Sessions</h1>
+    
+    {{if .SpawnEnabled}}
+    <form class="new-session" action="/spawn" method="POST">
+        <input type="hidden" name="csrf" value="{{.CSRFToken}}">
+        <input name="dir" placeholder="/path/to/project" required>
+        <input name="cmd" placeholder="claude" value="claude">
+        <button type="submit">+ New Session</button>
+    </form>
+    {{end}}
+
+    {{if .Groups}}
+        {{range $project, $sessions := .Groups}}
+        <h2>
+            <span>{{$project}}</span>
+            {{if $.SpawnEnabled}}
+            <form action="/spawn-project" method="POST" style="display:inline;margin:0;">
+                <input type="hidden" name="csrf" value="{{$.CSRFToken}}">
+                <input type="hidden" name="project" value="{{$project}}">
+                <input type="hidden" name="cmd" value="claude">
+                <button type="submit" class="add-btn">+</button>
+            </form>
+            {{end}}
+        </h2>
+        {{range $sessions}}
+        <div class="session-row">
+            <form action="/connect/{{.}}" method="POST" style="display:contents;">
+                <input type="hidden" name="csrf" value="{{$.CSRFToken}}">
+                <button type="submit" class="session">{{.}}</button>
+            </form>
+            <form action="/kill/{{.}}" method="POST" style="margin:0;">
+                <input type="hidden" name="csrf" value="{{$.CSRFToken}}">
+                <button type="submit" class="kill-btn">&#10005;</button>
+            </form>
+        </div>
+        {{end}}
+        {{end}}
+    {{else}}
+        <p class="empty">No tmux sessions running</p>
+    {{end}}
+</body>
+</html>
