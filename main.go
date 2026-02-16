@@ -269,13 +269,24 @@ func startTtyd(session string) (int, error) {
 
 	// Wait for ttyd to be ready (up to 2 seconds)
 	addr := fmt.Sprintf("%s:%d", tailscaleIP, port)
+	ready := false
 	for i := 0; i < 20; i++ {
 		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
 		if err == nil {
 			conn.Close()
+			ready = true
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !ready {
+		// ttyd probably failed to start (bad flag, missing binary, etc.)
+		portMutex.Lock()
+		delete(ttydInstances, session)
+		freePorts = append(freePorts, port)
+		portMutex.Unlock()
+		return 0, fmt.Errorf("ttyd failed to start on port %d", port)
 	}
 
 	return port, nil
@@ -720,26 +731,27 @@ func handleSpawnProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve project path - either relative to home or absolute
-	var dir string
-	home, _ := os.UserHomeDir()
-	if project == "~" {
-		dir = home
-	} else if strings.HasPrefix(project, "/") {
-		dir = project
-	} else {
-		dir = filepath.Join(home, project)
+	// First try to get directory from existing session for this project
+	dir := getProjectDir(project)
+	if dir == "" {
+		// No existing session - resolve the path but validate it
+		home, _ := os.UserHomeDir()
+		if project == "~" {
+			dir = home
+		} else if strings.HasPrefix(project, "/") {
+			dir = project
+		} else {
+			dir = filepath.Join(home, project)
+		}
 	}
 
-	// Verify it matches an existing session's directory
-	existingDir := getProjectDir(project)
-	if existingDir != "" {
-		dir = existingDir
-	}
-	if dir == "" {
-		http.Error(w, "unknown project directory", http.StatusNotFound)
+	// Resolve to absolute and clean path (handles ../)
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		http.Error(w, "invalid directory path", http.StatusBadRequest)
 		return
 	}
+	dir = absDir
 
 	cmd := r.FormValue("cmd")
 	if cmd == "" {
