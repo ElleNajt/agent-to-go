@@ -12,9 +12,10 @@ import (
 
 // Track running ttyd instances: session name -> port
 var (
-	ttydPorts = make(map[string]int)
-	portMutex sync.Mutex
-	nextPort  = 7700
+	ttydPorts   = make(map[string]int)
+	portMutex   sync.Mutex
+	nextPort    = 7700
+	tailscaleIP string
 )
 
 func main() {
@@ -28,8 +29,8 @@ func main() {
 		addr = ":8090"
 		log.Printf("Warning: couldn't get Tailscale IP, binding to all interfaces")
 	} else {
-		ip := strings.TrimSpace(string(out))
-		addr = ip + ":8090"
+		tailscaleIP = strings.TrimSpace(string(out))
+		addr = tailscaleIP + ":8090"
 	}
 
 	log.Printf("Claude Phone picker running on http://%s", addr)
@@ -65,7 +66,13 @@ func startTtyd(session string) (int, error) {
 	port := nextPort
 	nextPort++
 
-	cmd := exec.Command("ttyd", "-p", fmt.Sprintf("%d", port), "-W", "tmux", "attach", "-t", session)
+	// Bind ttyd to Tailscale IP (or all interfaces if not available)
+	var cmd *exec.Cmd
+	if tailscaleIP != "" {
+		cmd = exec.Command("ttyd", "-i", tailscaleIP, "-p", fmt.Sprintf("%d", port), "-W", "tmux", "attach", "-t", session)
+	} else {
+		cmd = exec.Command("ttyd", "-p", fmt.Sprintf("%d", port), "-W", "tmux", "attach", "-t", session)
+	}
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
