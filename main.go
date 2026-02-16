@@ -48,6 +48,24 @@ func validateCSRF(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(r.FormValue("csrf")), []byte(csrfToken)) == 1
 }
 
+func validateOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		// Referer is sent on form submissions when Origin isn't
+		referer := r.Header.Get("Referer")
+		if referer != "" {
+			origin = referer
+		}
+	}
+	// Same-origin requests may have no Origin header
+	if origin == "" {
+		return true
+	}
+	// Must come from our own server
+	allowed := "http://" + tailscaleIP
+	return strings.HasPrefix(origin, allowed)
+}
+
 func main() {
 	mathrand.Seed(time.Now().UnixNano())
 	csrfToken = generateCSRFToken()
@@ -382,8 +400,8 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	if !validateCSRF(r) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
+	if !validateCSRF(r) || !validateOrigin(r) {
+		http.Error(w, "invalid request", http.StatusForbidden)
 		return
 	}
 
@@ -500,8 +518,8 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	if !validateCSRF(r) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
+	if !validateCSRF(r) || !validateOrigin(r) {
+		http.Error(w, "invalid request", http.StatusForbidden)
 		return
 	}
 
@@ -541,8 +559,8 @@ func handleKill(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	if !validateCSRF(r) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
+	if !validateCSRF(r) || !validateOrigin(r) {
+		http.Error(w, "invalid request", http.StatusForbidden)
 		return
 	}
 
@@ -582,8 +600,8 @@ func handleSpawnProject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	if !validateCSRF(r) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
+	if !validateCSRF(r) || !validateOrigin(r) {
+		http.Error(w, "invalid request", http.StatusForbidden)
 		return
 	}
 
