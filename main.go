@@ -591,38 +591,39 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 }
 
 // proxyWebSocket dials the backend ttyd WebSocket and pipes data both ways.
-func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendHost, path string) {
-	// Hijack the client connection
+func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendHost, rest string) {
+	// Hijack the client connection first, before touching the backend.
+	// This is the standard pattern: take ownership of the client connection
+	// before forwarding anything, so we don't read from a connection the
+	// HTTP server still owns.
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "websocket proxy unsupported", http.StatusInternalServerError)
 		return
 	}
+	clientConn, _, err := hj.Hijack()
+	if err != nil {
+		return
+	}
+	defer clientConn.Close()
 
 	// Connect to backend
 	backendConn, err := net.Dial("tcp", backendHost)
 	if err != nil {
-		http.Error(w, "backend unavailable", http.StatusBadGateway)
+		clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
 		return
 	}
 	defer backendConn.Close()
 
 	// Forward the original HTTP upgrade request to backend
 	// Rewrite the request path and Host, keep all other headers (Upgrade, Sec-WebSocket-*, etc.)
-	r.URL.Path = path
+	r.URL.Path = rest
 	r.Host = backendHost
 	r.Header.Set("Host", backendHost)
 	if err := r.Write(backendConn); err != nil {
-		http.Error(w, "backend write failed", http.StatusBadGateway)
+		clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
 		return
 	}
-
-	// Hijack the client connection
-	clientConn, _, err := hj.Hijack()
-	if err != nil {
-		return
-	}
-	defer clientConn.Close()
 
 	// Bidirectional pipe
 	done := make(chan struct{}, 2)
