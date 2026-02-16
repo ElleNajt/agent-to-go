@@ -62,7 +62,7 @@ func main() {
 	http.HandleFunc("/", handleIndex)
 	http.HandleFunc("/connect/", handleConnect)
 	http.HandleFunc("/spawn", handleSpawn)
-	http.HandleFunc("/spawn/", handleSpawnProject)
+	http.HandleFunc("/spawn-project", handleSpawnProject)
 	http.HandleFunc("/kill/", handleKill)
 
 	// Get Tailscale IP - fail if unavailable (security: never bind to all interfaces)
@@ -368,8 +368,9 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
         {{range $project, $sessions := .Groups}}
         <h2>
             <span>{{$project}}</span>
-            <form action="/spawn/{{$project}}" method="POST" style="display:inline;margin:0;" onsubmit="return postForm(this)">
+            <form action="/spawn-project" method="POST" style="display:inline;margin:0;" onsubmit="return postForm(this)">
                 <input type="hidden" name="csrf" value="{{$.CSRFToken}}">
+                <input type="hidden" name="project" value="{{$project}}">
                 <input type="hidden" name="cmd" value="claude">
                 <button type="submit" class="add-btn">+</button>
             </form>
@@ -590,13 +591,26 @@ func handleSpawnProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	project := strings.TrimPrefix(r.URL.Path, "/spawn/")
+	project := r.FormValue("project")
 	if project == "" {
 		http.Error(w, "project required", http.StatusBadRequest)
 		return
 	}
 
-	dir := getProjectDir(project)
+	// Resolve project path - either relative to home or absolute
+	var dir string
+	home, _ := os.UserHomeDir()
+	if strings.HasPrefix(project, "/") {
+		dir = project
+	} else {
+		dir = filepath.Join(home, project)
+	}
+
+	// Verify it matches an existing session's directory
+	existingDir := getProjectDir(project)
+	if existingDir != "" {
+		dir = existingDir
+	}
 	if dir == "" {
 		http.Error(w, "unknown project directory", http.StatusNotFound)
 		return
