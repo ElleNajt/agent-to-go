@@ -62,7 +62,7 @@ func TestCSRFRequired(t *testing.T) {
 		case ep.path == "/spawn":
 			handleSpawn(w, req)
 		case ep.path == "/spawn-project":
-			handleSpawnProject(w, req)
+			handleSpawn(w, req)
 		case strings.HasPrefix(ep.path, "/kill/"):
 			handleKill(w, req)
 		}
@@ -267,7 +267,7 @@ func TestGETNotAllowed(t *testing.T) {
 		case path == "/spawn":
 			handleSpawn(w, req)
 		case path == "/spawn-project":
-			handleSpawnProject(w, req)
+			handleSpawn(w, req)
 		case strings.HasPrefix(path, "/kill/"):
 			handleKill(w, req)
 		}

@@ -201,7 +201,7 @@ func main() {
 	mux.HandleFunc("/connect/", handleConnect)
 	mux.HandleFunc("/terminal/", handleTerminal)
 	mux.HandleFunc("/spawn", handleSpawn)
-	mux.HandleFunc("/spawn-project", handleSpawnProject)
+	mux.HandleFunc("/spawn-project", handleSpawn) // same handler, uses "project" form field
 	mux.HandleFunc("/kill/", handleKill)
 
 	// Get Tailscale IP - fail if unavailable (security: never bind to all interfaces)
@@ -376,6 +376,35 @@ func groupSessionsByProject(sessions []string) map[string][]string {
 	return groups
 }
 
+// requirePOST validates method, CSRF, and Origin for state-changing handlers.
+// Returns true if the request is valid; writes an error response and returns false otherwise.
+func requirePOST(w http.ResponseWriter, r *http.Request) bool {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != "POST" {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return false
+	}
+	if !validateCSRF(r) || !validateOrigin(r) {
+		http.Error(w, "invalid request", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+// findSession checks that a session name exists in tmux. Returns true if found.
+func findSession(session string) (bool, error) {
+	sessions, err := getTmuxSessions()
+	if err != nil {
+		return false, err
+	}
+	for _, s := range sessions {
+		if s == session {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	sessions, err := getTmuxSessions()
@@ -490,14 +519,7 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendHost, rest st
 }
 
 func handleConnect(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-
-	if r.Method != "POST" {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-	if !validateCSRF(r) || !validateOrigin(r) {
-		http.Error(w, "invalid request", http.StatusForbidden)
+	if !requirePOST(w, r) {
 		return
 	}
 
@@ -508,26 +530,18 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate session exists (also prevents injection - only real session names accepted)
-	sessions, err := getTmuxSessions()
+	found, err := findSession(session)
 	if err != nil {
 		log.Printf("getTmuxSessions error: %v", err)
 		http.Error(w, "failed to list sessions", http.StatusInternalServerError)
 		return
 	}
-	valid := false
-	for _, s := range sessions {
-		if s == session {
-			valid = true
-			break
-		}
-	}
-	if !valid {
+	if !found {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
 
-	_, err = startTtyd(session)
-	if err != nil {
+	if _, err = startTtyd(session); err != nil {
 		log.Printf("startTtyd error for session %q: %v", session, err)
 		http.Error(w, "failed to start terminal", http.StatusInternalServerError)
 		return
@@ -608,37 +622,57 @@ func spawnSession(dir, cmd string) (string, error) {
 	return session, nil
 }
 
+// handleSpawn creates a new tmux session and connects to it.
+// Accepts either "dir" (explicit directory) or "project" (looked up from existing sessions).
 func handleSpawn(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	if r.Method != "POST" {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+	if !requirePOST(w, r) {
 		return
 	}
-	if !validateCSRF(r) || !validateOrigin(r) {
-		http.Error(w, "invalid request", http.StatusForbidden)
-		return
-	}
-
-	// Check if spawn is enabled
 	if config == nil {
 		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
 
 	dir := r.FormValue("dir")
-	cmd := r.FormValue("cmd")
-	if cmd == "" {
-		cmd = "claude"
-	}
-	if dir == "" {
-		http.Error(w, "dir required", http.StatusBadRequest)
+	project := r.FormValue("project")
+
+	if dir == "" && project == "" {
+		http.Error(w, "dir or project required", http.StatusBadRequest)
 		return
+	}
+
+	home, _ := os.UserHomeDir()
+
+	// Resolve directory from project name if no explicit dir
+	if dir == "" {
+		dir = getProjectDir(project)
+		if dir == "" {
+			if project == "~" {
+				dir = home
+			} else if strings.HasPrefix(project, "/") {
+				dir = project
+			} else {
+				dir = filepath.Join(home, project)
+			}
+		}
 	}
 
 	// Expand ~ to home directory
 	if strings.HasPrefix(dir, "~") {
-		home, _ := os.UserHomeDir()
-		dir = home + strings.TrimPrefix(dir, "~")
+		dir = home + dir[1:]
+	}
+
+	// Resolve to absolute and clean path (handles ../)
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		http.Error(w, "invalid directory path", http.StatusBadRequest)
+		return
+	}
+	dir = absDir
+
+	cmd := r.FormValue("cmd")
+	if cmd == "" {
+		cmd = "claude"
 	}
 
 	// Validate against allowlists
@@ -660,9 +694,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start ttyd and redirect to our reverse proxy
-	_, err = startTtyd(session)
-	if err != nil {
+	if _, err = startTtyd(session); err != nil {
 		log.Printf("startTtyd error for session %q: %v", session, err)
 		http.Error(w, "failed to start terminal", http.StatusInternalServerError)
 		return
@@ -671,13 +703,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleKill(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	if r.Method != "POST" {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-	if !validateCSRF(r) || !validateOrigin(r) {
-		http.Error(w, "invalid request", http.StatusForbidden)
+	if !requirePOST(w, r) {
 		return
 	}
 
@@ -688,20 +714,13 @@ func handleKill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate session exists
-	sessions, err := getTmuxSessions()
+	found, err := findSession(session)
 	if err != nil {
 		log.Printf("getTmuxSessions error: %v", err)
 		http.Error(w, "failed to list sessions", http.StatusInternalServerError)
 		return
 	}
-	valid := false
-	for _, s := range sessions {
-		if s == session {
-			valid = true
-			break
-		}
-	}
-	if !valid {
+	if !found {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
@@ -710,83 +729,4 @@ func handleKill(w http.ResponseWriter, r *http.Request) {
 	exec.Command("tmux", "kill-session", "-t", session).Run()
 
 	http.Redirect(w, r, "/", http.StatusFound)
-}
-
-func handleSpawnProject(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	if r.Method != "POST" {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-	if !validateCSRF(r) || !validateOrigin(r) {
-		http.Error(w, "invalid request", http.StatusForbidden)
-		return
-	}
-
-	// Check if spawn is enabled
-	if config == nil {
-		http.Error(w, "access denied", http.StatusForbidden)
-		return
-	}
-
-	project := r.FormValue("project")
-	if project == "" {
-		http.Error(w, "project required", http.StatusBadRequest)
-		return
-	}
-
-	// First try to get directory from existing session for this project
-	dir := getProjectDir(project)
-	if dir == "" {
-		// No existing session - resolve the path but validate it
-		home, _ := os.UserHomeDir()
-		if project == "~" {
-			dir = home
-		} else if strings.HasPrefix(project, "/") {
-			dir = project
-		} else {
-			dir = filepath.Join(home, project)
-		}
-	}
-
-	// Resolve to absolute and clean path (handles ../)
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		http.Error(w, "invalid directory path", http.StatusBadRequest)
-		return
-	}
-	dir = absDir
-
-	cmd := r.FormValue("cmd")
-	if cmd == "" {
-		cmd = "claude"
-	}
-
-	// Validate against allowlists
-	if !isCommandAllowed(cmd) {
-		log.Printf("spawn-project rejected: command %q not allowed", cmd)
-		http.Error(w, "access denied", http.StatusForbidden)
-		return
-	}
-	if !isDirectoryAllowed(dir) {
-		log.Printf("spawn-project rejected: directory %q not allowed", dir)
-		http.Error(w, "access denied", http.StatusForbidden)
-		return
-	}
-
-	session, err := spawnSession(dir, cmd)
-	if err != nil {
-		log.Printf("spawnSession error: %v", err)
-		http.Error(w, "failed to spawn session", http.StatusInternalServerError)
-		return
-	}
-
-	// Start ttyd and redirect to our reverse proxy
-	_, err = startTtyd(session)
-	if err != nil {
-		log.Printf("startTtyd error for session %q: %v", session, err)
-		http.Error(w, "failed to start terminal", http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, fmt.Sprintf("/terminal/%s/", session), http.StatusFound)
 }
