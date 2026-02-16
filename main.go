@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"html/template"
@@ -44,7 +45,7 @@ func generateCSRFToken() string {
 }
 
 func validateCSRF(r *http.Request) bool {
-	return r.FormValue("csrf") == csrfToken
+	return subtle.ConstantTimeCompare([]byte(r.FormValue("csrf")), []byte(csrfToken)) == 1
 }
 
 func main() {
