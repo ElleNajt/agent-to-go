@@ -1,4 +1,4 @@
-# agent-phone
+# agent-to-go
 
 Access terminal sessions from your phone's browser. Works with Claude Code, Codex, aider, or any CLI tool.
 
@@ -65,7 +65,7 @@ Access terminal sessions from your phone's browser. Works with Claude Code, Code
 |-----------|------|
 | **tmux** | Persistent terminal sessions that survive disconnects |
 | **ttyd** | Web server that exposes a terminal in a browser |
-| **agent-phone** | Glue: lists sessions, spawns ttyd, handles routing |
+| **agent-to-go** | Glue: lists sessions, spawns ttyd, handles routing |
 | **Tailscale** | Encrypted network, access control (only your devices) |
 | **agent-tmux** | Wrapper to create uniquely-named tmux sessions |
 
@@ -91,7 +91,7 @@ apt install tmux
 # ttyd: see https://github.com/tsl0922/ttyd#installation
 
 # Build the picker
-go build -o agent-phone .
+go build -o agent-to-go .
 
 # Copy agent-tmux to your PATH
 cp agent-tmux ~/.local/bin/
@@ -124,13 +124,13 @@ Now every `claude` command runs in a tmux session with a name like `claude-mypro
 Run on your server/computer (the machine where you run your CLI tools):
 
 ```bash
-./agent-phone
+./agent-to-go
 ```
 
 It binds to port 8090 on your Tailscale IP. You'll see output like:
 
 ```
-Agent Phone picker running on http://100.x.x.x:8090
+agent-to-go running at: http://100.x.x.x:8090
 ```
 
 ### 3. Connect from phone
@@ -142,16 +142,16 @@ Agent Phone picker running on http://100.x.x.x:8090
 
 ### Running as a service (optional)
 
-To keep agent-phone running after logout, create a systemd service:
+To keep agent-to-go running after logout, create a systemd service:
 
 ```bash
-# ~/.config/systemd/user/agent-phone.service
+# ~/.config/systemd/user/agent-to-go.service
 [Unit]
-Description=Agent Phone - tmux session picker
+Description=agent-to-go - tmux session picker
 After=network.target tailscaled.service
 
 [Service]
-ExecStart=/path/to/agent-phone
+ExecStart=/path/to/agent-to-go
 Restart=always
 
 [Install]
@@ -161,8 +161,8 @@ WantedBy=default.target
 Then:
 
 ```bash
-systemctl --user enable agent-phone
-systemctl --user start agent-phone
+systemctl --user enable agent-to-go
+systemctl --user start agent-to-go
 ```
 
 ## How agent-tmux works

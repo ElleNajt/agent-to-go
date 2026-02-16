@@ -1,4 +1,4 @@
-module agent-phone
+module agent-to-go
 
 go 1.25.5
 
