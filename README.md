@@ -202,6 +202,10 @@ See [SECURITY.md](SECURITY.md) for the full security model.
 | **Tailscale** | Encrypted network, access control (only your devices) |
 | **agent-tmux** | Wrapper to create uniquely-named tmux sessions |
 
+## Vision
+
+agent-to-go is the secure transport layer. On top of it, you can build mobile-friendly ACP frontends designed for phone browsers, and mirror them between other ACP frontends (e.g. agent-shell, Toad). agent-to-go handles the glue to the phone.
+
 ## See also
 
 Similar tools for accessing terminal sessions remotely:
