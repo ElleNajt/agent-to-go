@@ -204,7 +204,7 @@ See [SECURITY.md](SECURITY.md) for the full security model.
 
 ## Vision
 
-agent-to-go is the secure transport layer. On top of it, you can build mobile-friendly ACP frontends designed for phone browsers, and mirror them between other ACP frontends (e.g. agent-shell, Toad). agent-to-go handles the glue to the phone.
+agent-to-go is the secure transport layer. Its job is: serve something to your phone securely over Tailscale. Right now that something is a raw terminal via ttyd, but ttyd is just one backend. You could build mobile-friendly ACP CLI frontends — a web UI with approve/reject buttons, a dashboard, a log viewer — and serve them through the same security layer. These could mirror state with other ACP frontends (e.g. agent-shell, Toad). agent-to-go handles the glue to the phone.
 
 ## See also
 
