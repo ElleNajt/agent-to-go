@@ -1,10 +1,10 @@
 # agent-to-go
 
-A minimal, security-conscious way to access terminal sessions from your phone's browser. Works with Claude Code, Codex, aider, or any CLI tool.
+A secure building block for accessing local services from your phone — Claude Code, Codex, Emacs, or anything that runs in a terminal.
 
-A session picker, a reverse proxy to ttyd, and layered defenses against browser-based attacks (CSRF, DNS rebinding, clickjacking, origin validation). ~730 lines of Go. See [SECURITY.md](SECURITY.md) for the full threat model.
+An HTTP server, a reverse proxy, and layered defenses against browser-based attacks (CSRF, DNS rebinding, clickjacking, origin validation). Runs on your Tailnet. ~730 lines of Go. See [SECURITY.md](SECURITY.md) for the full threat model.
 
-**Warning:** This gives your phone full terminal access to your computer through your Tailnet. Review the code and security model before trusting it, and please contact me if you find any issues. <3 Consider running on a dedicated coding VM rather than a machine with important secrets.
+**Warning:** This gives your phone full terminal access to your computer through your Tailnet. Review the code and security model before trusting it, and please contact me if you find any issues. Consider running on a dedicated coding VM rather than a machine with important secrets until this has been thoroughly hardened.
 
 <p>
 <img src="image_on_phone.png" width="250" alt="Phone and computer showing the same Claude session">
@@ -40,7 +40,7 @@ nix-shell -p tmux ttyd tailscale
 apt install tmux
 # ttyd: see https://github.com/tsl0922/ttyd#installation
 
-# Build the picker
+# Build the server
 go build -o agent-to-go .
 
 # Copy agent-tmux to your PATH
@@ -69,7 +69,7 @@ alias aider='agent-tmux aider'
 
 Now every `claude` command runs in a tmux session with a name like `claude-myproject-swift-oak`.
 
-### 2. Start the picker
+### 2. Start the server
 
 Run on your server/computer (the machine where you run your CLI tools):
 
@@ -204,7 +204,7 @@ See [SECURITY.md](SECURITY.md) for the full security model.
 
 ## See also
 
-More feature-rich tools for accessing terminal sessions remotely:
+Similar tools for accessing terminal sessions remotely:
 
 - [agentboard](https://github.com/gbasin/agentboard) — Agent status detection, log matching, remote SSH, mobile-optimized UI
 - [247-claude-code-remote](https://github.com/QuivrHQ/247-claude-code-remote) — Push notifications, Claude/Codex hooks, cloud VM deployment
