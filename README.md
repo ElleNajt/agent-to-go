@@ -90,31 +90,6 @@ agent-to-go running at: http://100.x.x.x:8090
 3. You'll see a list of tmux sessions
 4. Tap a session to connect
 
-### Running as a service (optional)
-
-To keep agent-to-go running after logout, create a systemd service:
-
-```bash
-# ~/.config/systemd/user/agent-to-go.service
-[Unit]
-Description=agent-to-go - tmux session picker
-After=network.target tailscaled.service
-
-[Service]
-ExecStart=/path/to/agent-to-go
-Restart=always
-
-[Install]
-WantedBy=default.target
-```
-
-Then:
-
-```bash
-systemctl --user enable agent-to-go
-systemctl --user start agent-to-go
-```
-
 ## How agent-tmux works
 
 When you run `agent-tmux claude`:
