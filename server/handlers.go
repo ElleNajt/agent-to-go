@@ -18,17 +18,6 @@ import (
 var indexHTML string
 var indexTmpl = template.Must(template.New("index").Parse(indexHTML))
 
-// requirePOST checks that the request method is POST.
-// CSRF validation is handled by gorilla/csrf middleware.
-func requirePOST(w http.ResponseWriter, r *http.Request) bool {
-	w.Header().Set("Cache-Control", "no-store")
-	if r.Method != "POST" {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return false
-	}
-	return true
-}
-
 func handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	sessions, err := getTmuxSessions()
@@ -39,9 +28,8 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 	groups := groupSessionsByProject(sessions)
 
 	if err := indexTmpl.Execute(w, map[string]interface{}{
-		"Groups":       groups,
-		"CSRFField":    csrf.TemplateField(r),
-		"SpawnEnabled": config != nil,
+		"Groups":    groups,
+		"CSRFField": csrf.TemplateField(r),
 	}); err != nil {
 		log.Printf("template execute error: %v", err)
 	}
@@ -82,10 +70,6 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if !requirePOST(w, r) {
 		return
 	}
-	if config == nil {
-		http.Error(w, "access denied", http.StatusForbidden)
-		return
-	}
 
 	dir := r.FormValue("dir")
 	project := r.FormValue("project")
@@ -124,17 +108,6 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 	cmd := r.FormValue("cmd")
 	if cmd == "" {
 		cmd = "claude"
-	}
-
-	if !isCommandAllowed(cmd) {
-		log.Printf("spawn rejected: command %q not allowed", cmd)
-		http.Error(w, "access denied", http.StatusForbidden)
-		return
-	}
-	if !isDirectoryAllowed(dir) {
-		log.Printf("spawn rejected: directory %q not allowed", dir)
-		http.Error(w, "access denied", http.StatusForbidden)
-		return
 	}
 
 	session, err := spawnSession(dir, cmd)

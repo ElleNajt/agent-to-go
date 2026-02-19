@@ -105,27 +105,23 @@
 <body>
     <h1>Claude Sessions</h1>
     
-    {{if .SpawnEnabled}}
     <form class="new-session" action="/spawn" method="POST">
         {{.CSRFField}}
         <input name="dir" placeholder="/path/to/project" required>
         <input name="cmd" placeholder="claude" value="claude">
         <button type="submit">+ New Session</button>
     </form>
-    {{end}}
 
     {{if .Groups}}
         {{range $project, $sessions := .Groups}}
         <h2>
             <span>{{$project}}</span>
-            {{if $.SpawnEnabled}}
             <form action="/spawn-project" method="POST" style="display:inline;margin:0;">
                 {{$.CSRFField}}
                 <input type="hidden" name="project" value="{{$project}}">
                 <input type="hidden" name="cmd" value="claude">
                 <button type="submit" class="add-btn">+</button>
             </form>
-            {{end}}
         </h2>
         {{range $sessions}}
         <div class="session-row">

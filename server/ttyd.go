@@ -156,16 +156,8 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 	target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", inst.port))
 
 	if r.Header.Get("Upgrade") == "websocket" {
-		// Defend against cross-origin WebSocket CSRF: the browser sends
-		// an Origin header on WebSocket upgrades that cannot be forged
-		// by a cross-origin page.
-		origin := r.Header.Get("Origin")
-		if origin != "" {
-			originURL, err := url.Parse(origin)
-			if err != nil || originURL.Host != r.Host {
-				http.Error(w, "origin not allowed", http.StatusForbidden)
-				return
-			}
+		if !checkWebSocketOrigin(w, r) {
+			return
 		}
 		proxyWebSocket(w, r, target.Host, rest)
 		return

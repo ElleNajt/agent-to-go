@@ -10,13 +10,6 @@ import (
 	"github.com/gorilla/csrf"
 )
 
-func init() {
-	config = &Config{
-		AllowedCommands:    []string{"claude", "codex", "echo"},
-		AllowedDirectories: []string{"/tmp", "/Users/elle/code"},
-	}
-}
-
 var csrfTestKey = []byte("test-key-must-be-32-bytes-long!!")
 
 // newCSRFHandler wraps a handler with gorilla/csrf for testing.

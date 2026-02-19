@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/rand"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,38 +11,7 @@ import (
 	"tailscale.com/tsnet"
 )
 
-// loadOrCreateCSRFKey reads or creates a persistent 32-byte CSRF key.
-// gorilla/csrf needs this key to HMAC-sign cookies; it must persist
-// across restarts so existing cookies remain valid.
-func loadOrCreateCSRFKey(stateDir string) ([]byte, error) {
-	keyPath := filepath.Join(stateDir, "csrf-key")
-	data, err := os.ReadFile(keyPath)
-	if err == nil && len(data) == 32 {
-		return data, nil
-	}
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		return nil, fmt.Errorf("generating CSRF key: %w", err)
-	}
-	if err := os.MkdirAll(stateDir, 0700); err != nil {
-		return nil, fmt.Errorf("creating state dir: %w", err)
-	}
-	if err := os.WriteFile(keyPath, key, 0600); err != nil {
-		return nil, fmt.Errorf("writing CSRF key: %w", err)
-	}
-	return key, nil
-}
-
 func main() {
-	config = loadConfig()
-
-	if config != nil {
-		log.Printf("Spawn enabled - allowed commands: %v", config.AllowedCommands)
-		log.Printf("Spawn enabled - allowed directories: %v", config.AllowedDirectories)
-	} else {
-		log.Printf("Spawn disabled - no config at ~/.config/agent-to-go/config.yaml")
-	}
-
 	// tsnet embeds a Tailscale node directly in the process.
 	// Provides automatic TLS via Let's Encrypt for *.ts.net domains.
 	ts := &tsnet.Server{
