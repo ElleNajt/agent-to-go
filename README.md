@@ -187,6 +187,7 @@ Similar tools for accessing terminal sessions remotely:
 - [agentboard](https://github.com/gbasin/agentboard) — Agent status detection, log matching, remote SSH, mobile-optimized UI
 - [247-claude-code-remote](https://github.com/QuivrHQ/247-claude-code-remote) — Push notifications, Claude/Codex hooks, cloud VM deployment
 - [VibeTunnel](https://github.com/amantus-ai/vibetunnel) — File browser, Monaco editor, git integration, native iOS/macOS apps, session recording
+- [acp-ui](https://github.com/formulahendry/acp-ui) — Cross-platform ACP desktop client (Tauri/Vue). The Vue frontend could potentially be adapted into a mobile-friendly web UI served through agent-to-go
 
 ## Troubleshooting
 
