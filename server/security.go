@@ -9,12 +9,9 @@ package main
 //   4. POST enforcement     — mutating endpoints reject non-POST methods
 //   5. WebSocket Origin     — cross-origin WebSocket upgrades are blocked
 //
-// This file contains the reusable security primitives. Security-relevant
-// code also lives in:
-//   - main.go:       CSRF middleware wiring (csrf.Protect, Secure, SameSite)
-//   - handlers.go:   requirePOST calls, session validation via findSession
-//   - ttyd.go:       127.0.0.1 binding, checkWebSocketOrigin call
-//   - tmux.go:       exec.Command with "--" flag separator
+// This file contains all web security logic. Read this one file to
+// understand the web security posture. Non-web security decisions
+// (127.0.0.1 binding, exec.Command flags) live in ttyd.go and tmux.go.
 
 import (
 	"crypto/rand"
@@ -23,6 +20,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+
+	"github.com/gorilla/csrf"
 )
 
 // loadOrCreateCSRFKey reads or creates a persistent 32-byte CSRF key.
@@ -45,6 +44,26 @@ func loadOrCreateCSRFKey(stateDir string) ([]byte, error) {
 		return nil, fmt.Errorf("writing CSRF key: %w", err)
 	}
 	return key, nil
+}
+
+// newCSRFMiddleware configures gorilla/csrf for this application.
+//   - Secure(true): cookie only sent over HTTPS
+//   - SameSite Strict: cookie never sent on cross-origin requests
+//   - Path("/"): cookie covers all routes
+//
+// gorilla/csrf additionally provides:
+//   - Double-submit cookie pattern (token in cookie + form body, HMAC-verified)
+//   - Per-request token masking (BREACH mitigation)
+//   - Referer checking on HTTPS (rejects cross-origin POST)
+//   - HttpOnly cookies by default
+//   - Safe methods (GET, HEAD, OPTIONS, TRACE) are not checked
+func newCSRFMiddleware(key []byte) func(http.Handler) http.Handler {
+	return csrf.Protect(
+		key,
+		csrf.Secure(true),
+		csrf.SameSite(csrf.SameSiteStrictMode),
+		csrf.Path("/"),
+	)
 }
 
 // requirePOST checks that the request method is POST.

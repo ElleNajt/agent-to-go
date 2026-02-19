@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/gorilla/csrf"
 	"tailscale.com/tsnet"
 )
 
@@ -45,14 +44,7 @@ func main() {
 	mux.HandleFunc("/spawn-project", handleSpawn)
 	mux.HandleFunc("/kill/", handleKill)
 
-	// gorilla/csrf: double-submit cookie, SameSite Strict,
-	// Referer checking (automatic for HTTPS), BREACH mitigation.
-	csrfMiddleware := csrf.Protect(
-		csrfKey,
-		csrf.Secure(true),
-		csrf.SameSite(csrf.SameSiteStrictMode),
-		csrf.Path("/"),
-	)
+	csrfMiddleware := newCSRFMiddleware(csrfKey)
 
 	go cleanupOrphanedTtyd()
 
