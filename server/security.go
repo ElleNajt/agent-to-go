@@ -9,9 +9,16 @@ package main
 //   4. POST enforcement     — mutating endpoints reject non-POST methods
 //   5. WebSocket Origin     — cross-origin WebSocket upgrades are blocked
 //
-// This file contains all web security logic. Read this one file to
-// understand the web security posture. Non-web security decisions
-// (127.0.0.1 binding, exec.Command flags) live in ttyd.go and tmux.go.
+// This file contains all web security configuration and enforcement.
+// Read this file to understand the web security posture.
+//
+// The one security-relevant call outside this file is
+// csrf.TemplateField(r) in handlers.go, which embeds the CSRF token
+// into HTML forms. If that call were removed, all POSTs would be
+// rejected (fail-closed).
+//
+// Non-web security decisions (127.0.0.1 binding, exec.Command flags)
+// live in ttyd.go and tmux.go.
 
 import (
 	"crypto/rand"
