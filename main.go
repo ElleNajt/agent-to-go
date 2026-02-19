@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	_ "embed"
 	"encoding/hex"
 	"fmt"
@@ -21,7 +20,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/csrf"
 	"gopkg.in/yaml.v3"
+	"tailscale.com/tsnet"
 )
 
 // Track running ttyd instances
@@ -40,9 +41,7 @@ var (
 	ttydInstances = make(map[string]*ttydInstance)
 	portMutex     sync.Mutex
 	nextPort      = 7700
-	freePorts     []int // reclaimed ports to reuse
-	tailscaleIP   string
-	csrfToken     string  // generated at startup, required for POST requests
+	freePorts     []int   // reclaimed ports to reuse
 	config        *Config // nil = spawn disabled
 )
 
@@ -54,12 +53,6 @@ var (
 	adjectives = []string{"clever", "sleepy", "happy", "busy", "cozy", "gentle", "curious", "eager", "nimble", "quick"}
 	nouns      = []string{"otter", "panda", "fox", "rabbit", "owl", "mouse", "seal", "frog", "duck", "wren"}
 )
-
-func generateCSRFToken() string {
-	bytes := make([]byte, 32)
-	rand.Read(bytes)
-	return hex.EncodeToString(bytes)
-}
 
 func loadConfig() *Config {
 	home, _ := os.UserHomeDir()
@@ -129,66 +122,29 @@ func isDirectoryAllowed(dir string) bool {
 	return false
 }
 
-func validateCSRF(r *http.Request) bool {
-	return subtle.ConstantTimeCompare([]byte(r.FormValue("csrf")), []byte(csrfToken)) == 1
-}
-
-func validateOrigin(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		// Referer is sent on form submissions when Origin isn't
-		referer := r.Header.Get("Referer")
-		if referer != "" {
-			origin = referer
-		}
+// loadOrCreateCSRFKey reads or creates a persistent 32-byte CSRF key.
+// The key must persist across restarts so gorilla/csrf cookies remain valid.
+func loadOrCreateCSRFKey(stateDir string) ([]byte, error) {
+	keyPath := filepath.Join(stateDir, "csrf-key")
+	data, err := os.ReadFile(keyPath)
+	if err == nil && len(data) == 32 {
+		return data, nil
 	}
-	// Same-origin requests may have no Origin header
-	if origin == "" {
-		return true
+	// Generate new key
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("generating CSRF key: %w", err)
 	}
-	// Must come from our own server.
-	// Check that origin is exactly "http://<tailscaleIP>" optionally followed by
-	// a port (":...") or path ("/..."). This prevents "http://100.1.2.3.evil.com"
-	// from matching when tailscaleIP is "100.1.2.3".
-	allowed := "http://" + tailscaleIP
-	if !strings.HasPrefix(origin, allowed) {
-		return false
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		return nil, fmt.Errorf("creating state dir: %w", err)
 	}
-	rest := origin[len(allowed):]
-	return rest == "" || rest[0] == ':' || rest[0] == '/'
-}
-
-// validateHost checks that the Host header matches our Tailscale IP.
-// This blocks DNS rebinding attacks: after rebinding, the browser sends
-// Host: evil.com (the attacker's domain), not our IP. Rejecting mismatched
-// Host headers prevents the attacker from reading the index page at all,
-// so they can never extract the CSRF token.
-func validateHost(r *http.Request) bool {
-	host := r.Host
-	// Strip port if present
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
+	if err := os.WriteFile(keyPath, key, 0600); err != nil {
+		return nil, fmt.Errorf("writing CSRF key: %w", err)
 	}
-	return host == tailscaleIP
-}
-
-// hostCheckMiddleware wraps an http.Handler to reject requests with wrong Host headers.
-func hostCheckMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !validateHost(r) {
-			http.Error(w, "invalid host", http.StatusForbidden)
-			return
-		}
-		// Prevent clickjacking — page must not be framed by other sites
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		next.ServeHTTP(w, r)
-	})
+	return key, nil
 }
 
 func main() {
-	csrfToken = generateCSRFToken()
 	config = loadConfig()
 
 	if config != nil {
@@ -198,35 +154,70 @@ func main() {
 		log.Printf("Spawn disabled - no config at ~/.config/agent-to-go/config.yaml")
 	}
 
+	// Set up tsnet — embeds a Tailscale node directly in the process.
+	// Provides automatic TLS via Let's Encrypt for *.ts.net domains.
+	ts := &tsnet.Server{
+		Hostname: "agent-to-go",
+	}
+	defer ts.Close()
+
+	// Listen with automatic TLS
+	ln, err := ts.ListenTLS("tcp", ":443")
+	if err != nil {
+		log.Fatalf("tsnet ListenTLS: %v", err)
+	}
+	defer ln.Close()
+
+	// Get the hostname for display
+	status, err := ts.Up(nil)
+	if err != nil {
+		log.Fatalf("tsnet Up: %v", err)
+	}
+
+	// Load or create persistent CSRF key
+	home, _ := os.UserHomeDir()
+	stateDir := filepath.Join(home, ".config", "agent-to-go")
+	csrfKey, err := loadOrCreateCSRFKey(stateDir)
+	if err != nil {
+		log.Fatalf("CSRF key: %v", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleIndex)
 	mux.HandleFunc("/connect/", handleConnect)
 	mux.HandleFunc("/terminal/", handleTerminal)
 	mux.HandleFunc("/spawn", handleSpawn)
-	mux.HandleFunc("/spawn-project", handleSpawn) // same handler, uses "project" form field
+	mux.HandleFunc("/spawn-project", handleSpawn)
 	mux.HandleFunc("/kill/", handleKill)
 
-	// Get Tailscale IP - fail if unavailable (security: never bind to all interfaces)
-	out, err := exec.Command("tailscale", "ip", "-4").Output()
-	if err != nil {
-		log.Fatal("Tailscale IP not available - refusing to start. Ensure Tailscale is running and logged in.")
-	}
-	tailscaleIP = strings.TrimSpace(string(out))
-	if tailscaleIP == "" {
-		log.Fatal("Tailscale returned empty IP - refusing to start.")
-	}
-	addr := tailscaleIP + ":8090"
+	// gorilla/csrf handles:
+	// - CSRF token generation and cookie storage (double-submit cookie pattern)
+	// - Token validation on POST/PUT/DELETE/PATCH
+	// - Origin/Referer checking (automatic for HTTPS)
+	// - BREACH mitigation (unique masked token per request)
+	csrfMiddleware := csrf.Protect(
+		csrfKey,
+		csrf.Secure(true), // HTTPS via tsnet
+		csrf.SameSite(csrf.SameSiteStrictMode),
+		csrf.Path("/"),
+	)
 
 	// Clean up orphaned ttyd processes every 30 seconds
 	go cleanupOrphanedTtyd()
 
-	url := fmt.Sprintf("http://%s", addr)
+	hostname := "agent-to-go"
+	if len(status.CertDomains) > 0 {
+		hostname = status.CertDomains[0]
+	}
+	url := fmt.Sprintf("https://%s", hostname)
 	fmt.Println()
 	fmt.Println("===========================================")
 	fmt.Printf("  agent-to-go running at: %s\n", url)
 	fmt.Println("===========================================")
 	fmt.Println()
-	log.Fatal(http.ListenAndServe(addr, hostCheckMiddleware(mux)))
+
+	// http.Serve (not http.ServeTLS) — ListenTLS already terminates TLS
+	log.Fatal(http.Serve(ln, csrfMiddleware(mux)))
 }
 
 // Clean up ttyd instances for sessions that no longer exist
@@ -297,8 +288,7 @@ func startTtyd(session string) (int, error) {
 	}
 
 	// Bind ttyd to localhost only — unreachable from the network.
-	// All access goes through our reverse proxy at /terminal/{session}/, which
-	// enforces Host header validation (blocking DNS rebinding).
+	// All access goes through our reverse proxy at /terminal/{session}/.
 	cmd := exec.Command("ttyd", "-i", "127.0.0.1", "-p", fmt.Sprintf("%d", port), "-W", "-t", "fontSize=32", "tmux", "attach", "-t", session)
 	if err := cmd.Start(); err != nil {
 		return 0, err
@@ -333,8 +323,6 @@ func startTtyd(session string) (int, error) {
 	}
 
 	if !ready {
-		// ttyd probably failed to start (bad flag, missing binary, etc.)
-		// Lock is already held via defer, so just clean up directly.
 		delete(ttydInstances, session)
 		freePorts = append(freePorts, port)
 		return 0, fmt.Errorf("ttyd failed to start on port %d", port)
@@ -378,16 +366,12 @@ func groupSessionsByProject(sessions []string) map[string][]string {
 	return groups
 }
 
-// requirePOST validates method, CSRF, and Origin for state-changing handlers.
-// Returns true if the request is valid; writes an error response and returns false otherwise.
+// requirePOST checks that the request method is POST.
+// CSRF validation is handled by gorilla/csrf middleware.
 func requirePOST(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != "POST" {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return false
-	}
-	if !validateCSRF(r) || !validateOrigin(r) {
-		http.Error(w, "invalid request", http.StatusForbidden)
 		return false
 	}
 	return true
@@ -418,7 +402,7 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	if err := indexTmpl.Execute(w, map[string]interface{}{
 		"Groups":       groups,
-		"CSRFToken":    csrfToken,
+		"CSRFField":    csrf.TemplateField(r),
 		"SpawnEnabled": config != nil,
 	}); err != nil {
 		log.Printf("template execute error: %v", err)
@@ -427,7 +411,6 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 
 // handleTerminal reverse-proxies requests to the local ttyd instance.
 // Browser hits /terminal/{session}/* -> we forward to 127.0.0.1:{port}/*
-// This keeps ttyd off the network while our middleware validates Host headers.
 func handleTerminal(w http.ResponseWriter, r *http.Request) {
 	// Extract session name: /terminal/{session}/rest/of/path
 	subpath := strings.TrimPrefix(r.URL.Path, "/terminal/")
@@ -480,10 +463,6 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 
 // proxyWebSocket dials the backend ttyd WebSocket and pipes data both ways.
 func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendHost, rest string) {
-	// Hijack the client connection first, before touching the backend.
-	// This is the standard pattern: take ownership of the client connection
-	// before forwarding anything, so we don't read from a connection the
-	// HTTP server still owns.
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "websocket proxy unsupported", http.StatusInternalServerError)
@@ -504,7 +483,6 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendHost, rest st
 	defer backendConn.Close()
 
 	// Forward the original HTTP upgrade request to backend
-	// Rewrite the request path and Host, keep all other headers (Upgrade, Sec-WebSocket-*, etc.)
 	r.URL.Path = rest
 	r.Host = backendHost
 	r.Header.Set("Host", backendHost)
@@ -563,7 +541,6 @@ func getProjectDir(project string) string {
 		if len(parts) >= 4 {
 			sessionProject := strings.Join(parts[1:len(parts)-2], "-")
 			if sessionProject == project {
-				// Found a session for this project, get its directory
 				out, err := exec.Command("tmux", "show-environment", "-t", s, "AGENT_TMUX_DIR").Output()
 				if err == nil {
 					line := strings.TrimSpace(string(out))
@@ -625,7 +602,6 @@ func spawnSession(dir, cmd string) (string, error) {
 }
 
 // handleSpawn creates a new tmux session and connects to it.
-// Accepts either "dir" (explicit directory) or "project" (looked up from existing sessions).
 func handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if !requirePOST(w, r) {
 		return
@@ -731,4 +707,11 @@ func handleKill(w http.ResponseWriter, r *http.Request) {
 	exec.Command("tmux", "kill-session", "-t", session).Run()
 
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// generateCSRFKeyHex returns a hex-encoded random string (used only by tests).
+func generateCSRFKeyHex() string {
+	bytes := make([]byte, 32)
+	rand.Read(bytes)
+	return hex.EncodeToString(bytes)
 }
