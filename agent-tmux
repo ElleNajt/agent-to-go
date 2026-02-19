@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # agent-tmux - run any command in tmux for phone access
 #
 # Usage: agent-tmux <command> [args...]
