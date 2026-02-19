@@ -15,7 +15,7 @@ func main() {
 	// tsnet embeds a Tailscale node directly in the process.
 	// Provides automatic TLS via Let's Encrypt for *.ts.net domains.
 	ts := &tsnet.Server{
-		Hostname: "agent-to-go",
+		Hostname: "agent-to-go-fugue",
 	}
 	defer ts.Close()
 
