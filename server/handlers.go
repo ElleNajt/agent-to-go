@@ -21,6 +21,7 @@ var indexTmpl = template.Must(template.New("index").Parse(indexHTML))
 func handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'none'; frame-ancestors 'none'")
+	w.Header().Set("X-Frame-Options", "DENY")
 	sessions, err := getTmuxSessions()
 	if err != nil {
 		sessions = []string{}

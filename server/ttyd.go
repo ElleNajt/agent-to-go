@@ -145,6 +145,8 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 
 	rest = filepath.Clean(rest)
 
+	w.Header().Set("Cache-Control", "no-store")
+
 	portMutex.Lock()
 	inst, ok := ttydInstances[session]
 	portMutex.Unlock()

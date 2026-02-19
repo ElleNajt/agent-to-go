@@ -76,6 +76,19 @@ else
     fail "CSRF token not found in page"
 fi
 
+# Valid token round-trip: POST /spawn with real token + cookie should NOT get 403
+if [ -n "$TOKEN" ]; then
+    VALID_CODE=$(curl -s --connect-timeout 5 -o /dev/null -w "%{http_code}" \
+        -b /tmp/audit_csrf.txt \
+        -X POST -d "dir=/tmp&cmd=echo&gorilla.csrf.Token=$TOKEN" \
+        "$SERVER_URL/spawn" 2>&1) || VALID_CODE="000"
+    if [ "$VALID_CODE" != "403" ] && [ "$VALID_CODE" != "000" ]; then
+        pass "POST /spawn with valid token accepted (HTTP $VALID_CODE)"
+    else
+        fail "POST /spawn with valid token rejected (HTTP $VALID_CODE)"
+    fi
+fi
+
 echo ""
 echo "[POST Enforcement]"
 check_http "GET /spawn rejected" "405" "$SERVER_URL/spawn?dir=/tmp"
@@ -120,6 +133,20 @@ if [ -n "$CSP" ]; then
         pass "CSP: frame-ancestors 'none'"
     else
         fail "CSP missing frame-ancestors: $CSP"
+    fi
+fi
+
+echo ""
+echo "[X-Frame-Options]"
+XFO=$(echo "$HEADERS" | grep -i "x-frame-options") || {
+    fail "X-Frame-Options header missing"
+    XFO=""
+}
+if [ -n "$XFO" ]; then
+    if echo "$XFO" | grep -qi "DENY"; then
+        pass "X-Frame-Options: DENY"
+    else
+        fail "X-Frame-Options wrong: $XFO"
     fi
 fi
 
