@@ -48,9 +48,11 @@ All security primitives are in `server/security.go`. The CSRF middleware is wire
 
 tsnet embeds a Tailscale node directly in the Go process. The server is only reachable from the Tailnet — there is no public IP, no port forwarding, no firewall rules to maintain. If Tailscale is unavailable, the server refuses to start.
 
-### 2. TLS (transport encryption)
+### 2. TLS (transport encryption + DNS rebinding defense)
 
 tsnet provides automatic Let's Encrypt TLS certificates for `*.ts.net` domains via `ListenTLS`. All traffic is encrypted twice: WireGuard (Tailscale tunnel) and TLS (HTTPS). This ensures encryption even within the Tailnet and enables gorilla/csrf's Referer checking (which requires HTTPS).
+
+TLS also eliminates DNS rebinding attacks. The server only accepts connections through the Tailscale tunnel (not on any local IP), and a rebinding attacker cannot obtain a valid TLS certificate for `agent-to-go.<tailnet>.ts.net`. The browser's TLS handshake would fail before any HTTP request is sent.
 
 ### 3. CSRF protection (gorilla/csrf)
 
