@@ -69,7 +69,7 @@ check_http "POST with forged token" "403" \
     -X POST -d "dir=/tmp&gorilla.csrf.Token=forged-token" "$SERVER_URL/spawn"
 
 RESPONSE=$(curl -s -c /tmp/audit_csrf.txt "$SERVER_URL/")
-TOKEN=$(echo "$RESPONSE" | grep -o 'name="gorilla.csrf.Token" value="[^"]*"' | grep -o 'value="[^"]*"' | cut -d'"' -f2)
+TOKEN=$(echo "$RESPONSE" | grep -o 'name="gorilla.csrf.Token" value="[^"]*"' | head -1 | grep -o 'value="[^"]*"' | cut -d'"' -f2)
 if [ -n "$TOKEN" ]; then
     pass "CSRF token present in page"
 else
@@ -77,10 +77,16 @@ else
 fi
 
 # Valid token round-trip: POST /spawn with real token + cookie should NOT get 403
+# gorilla/csrf requires Referer on HTTPS, so we set it to match the server.
+# Use --data-urlencode because tokens contain base64 characters (+, /, =).
 if [ -n "$TOKEN" ]; then
     VALID_CODE=$(curl -s --connect-timeout 5 -o /dev/null -w "%{http_code}" \
         -b /tmp/audit_csrf.txt \
-        -X POST -d "dir=/tmp&cmd=echo&gorilla.csrf.Token=$TOKEN" \
+        -e "$SERVER_URL/" \
+        -X POST \
+        --data-urlencode "dir=/tmp" \
+        --data-urlencode "cmd=echo" \
+        --data-urlencode "gorilla.csrf.Token=$TOKEN" \
         "$SERVER_URL/spawn" 2>&1) || VALID_CODE="000"
     if [ "$VALID_CODE" != "403" ] && [ "$VALID_CODE" != "000" ]; then
         pass "POST /spawn with valid token accepted (HTTP $VALID_CODE)"
