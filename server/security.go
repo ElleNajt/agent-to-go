@@ -9,7 +9,12 @@ package main
 //   4. POST enforcement     — mutating endpoints reject non-POST methods
 //   5. WebSocket Origin     — cross-origin WebSocket upgrades are blocked
 //
-// The CSRF middleware is wired in main.go. Everything else lives here.
+// This file contains the reusable security primitives. Security-relevant
+// code also lives in:
+//   - main.go:       CSRF middleware wiring (csrf.Protect, Secure, SameSite)
+//   - handlers.go:   requirePOST calls, session validation via findSession
+//   - ttyd.go:       127.0.0.1 binding, checkWebSocketOrigin call
+//   - tmux.go:       exec.Command with "--" flag separator
 
 import (
 	"crypto/rand"
