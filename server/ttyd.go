@@ -85,8 +85,11 @@ func startTtyd(session string) (int, error) {
 	}
 
 	if !ready {
-		delete(ttydInstances, session)
-		freePorts = append(freePorts, port)
+		// Kill the process — the background goroutine (line 71) will
+		// reap it, reclaim the port, and delete from ttydInstances.
+		// Don't touch ttydInstances or freePorts here to avoid a
+		// double-reclaim race.
+		cmd.Process.Kill()
 		return 0, fmt.Errorf("ttyd failed to start on port %d", port)
 	}
 
