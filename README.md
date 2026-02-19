@@ -2,7 +2,7 @@
 
 A secure building block for accessing local services from your phone — Claude Code, Codex, Emacs, or anything that runs in a terminal.
 
-An HTTP server, a reverse proxy, and layered defenses against browser-based attacks (CSRF, DNS rebinding, clickjacking, origin validation). Runs on your Tailnet. ~730 lines of Go. See [SECURITY.md](SECURITY.md) for the full threat model.
+An HTTPS server with tsnet (embedded Tailscale) and gorilla/csrf, a reverse proxy for ttyd terminals. Runs on your Tailnet with automatic TLS. See [SECURITY.md](SECURITY.md) for the full threat model.
 
 **Warning:** This gives your phone full terminal access to your computer through your Tailnet. Review the code and security model before trusting it, and please contact me if you find any issues. Consider running on a dedicated coding VM rather than a machine with important secrets until this has been thoroughly hardened.
 
@@ -41,7 +41,7 @@ apt install tmux
 # ttyd: see https://github.com/tsl0922/ttyd#installation
 
 # Build the server
-go build -o agent-to-go .
+go build -o agent-to-go ./server/
 
 # Copy agent-tmux to your PATH
 cp agent-tmux ~/.local/bin/
@@ -77,16 +77,16 @@ Run on your server/computer (the machine where you run your CLI tools):
 ./agent-to-go
 ```
 
-It binds to port 8090 on your Tailscale IP. You'll see output like:
+It embeds a Tailscale node and serves HTTPS with automatic TLS. You'll see output like:
 
 ```
-agent-to-go running at: http://100.x.x.x:8090
+agent-to-go running at: https://agent-to-go.<tailnet>.ts.net
 ```
 
 ### 3. Connect from phone
 
 1. Make sure your phone is on Tailscale
-2. Open `http://<tailscale-ip>:8090` in your phone browser
+2. Open the URL shown at startup in your phone browser
 3. You'll see a list of tmux sessions
 4. Tap a session to connect
 
@@ -110,20 +110,19 @@ If you're already inside tmux, it creates a detached session and switches to it.
 
 **What's protected:**
 
-- Server bound to Tailscale IP only (refuses to start if Tailscale unavailable)
-- ttyd instances bound to localhost, accessed via reverse proxy
-- CSRF tokens on all state-changing endpoints
-- Host header validation blocks DNS rebinding attacks
-- Origin validation blocks cross-origin POST requests
-- Command/directory allowlists for spawning sessions
+- tsnet embeds a Tailscale node — server is only reachable from your Tailnet
+- Automatic TLS via Let's Encrypt (HTTPS, not just WireGuard)
+- gorilla/csrf on all state-changing endpoints (double-submit cookie, SameSite Strict)
+- WebSocket Origin validation blocks cross-site terminal hijacking
+- ttyd instances bound to localhost, accessed via reverse proxy only
 - Orphaned ttyd processes cleaned up automatically
 
-See [SECURITY.md](SECURITY.md) for the full security model.
+All security primitives are in one file: `server/security.go`. See [SECURITY.md](SECURITY.md) for the full security model.
 
 **What's NOT protected:**
 
 - No auth within Tailnet (Tailnet access = full terminal access)
-- No HTTPS (relies on Tailscale's WireGuard encryption)
+- Any command can be spawned in any directory (no allowlists — the Tailnet is the boundary)
 
 ## Architecture
 
@@ -147,15 +146,15 @@ See [SECURITY.md](SECURITY.md) for the full security model.
 │         └────────┬──────────┘                                   │
 │                  │ reverse proxy                                │
 │           ┌──────┴──────┐                                       │
-│           │ agent-to-go │  HTTP server                          │
-│           │    :8090    │  - lists sessions                     │
-│           │             │  - reverse proxies ttyd               │
-│           └──────▲──────┘  - Host header validation             │
+│           │ agent-to-go │  HTTPS server (tsnet)                 │
+│           │    :443     │  - automatic TLS                      │
+│           │             │  - gorilla/csrf                       │
+│           └──────▲──────┘  - reverse proxies ttyd               │
 │                  │                                              │
-│                  │ bound to Tailscale IP only                   │
+│                  │ embedded Tailscale node (tsnet)              │
 └──────────────────┼──────────────────────────────────────────────┘
                    │
-                   │ WireGuard encrypted tunnel
+                   │ WireGuard + TLS
                    │
 ┌──────────────────┼──────────────────────────────────────────────┐
 │    Tailscale     │                                              │
