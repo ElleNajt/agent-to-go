@@ -2,34 +2,34 @@
 
 ## Threat model
 
-agent-to-go gives your phone browser full terminal access to your computer. The security boundary is your Tailnet: **all devices on the Tailnet are fully trusted**. There is no authentication beyond Tailnet membership — any device that can reach the Tailscale IP has full terminal access with no additional credentials.
-
-The CSRF, Origin, and Host header protections exist solely to defend against browser-based attacks from the public internet (malicious websites, DNS rebinding, cross-origin requests). They do not protect against a malicious device on the Tailnet.
+agent-to-go gives your phone browser full terminal access to your computer. The security boundary is your Tailnet: **all devices on the Tailnet are fully trusted**. There is no authentication beyond Tailnet membership.
 
 This means:
 - This is designed for a single-user Tailnet
 - Don't use this on a shared Tailnet where you don't trust every device
-- **Run on a dedicated coding VM** rather than your main machine. This limits the blast radius — if anything goes wrong, the attacker gets a VM with code on it, not your personal machine with credentials, keys, and personal data. Tailscale ACLs can further restrict what the VM can reach on your network.
+- **Run on a dedicated coding VM** rather than your main machine. This limits the blast radius — if anything goes wrong, the attacker gets a VM with code on it, not your personal machine with credentials, keys, and personal data.
 - If your Tailscale key is compromised, your terminals are exposed
+
+The CSRF, Origin, and TLS protections exist solely to defend against browser-based attacks from the public internet (malicious websites, DNS rebinding, cross-origin requests). They do not protect against a malicious device on the Tailnet.
 
 ## Architecture
 
 ```
 Phone (browser)
   |
-  | HTTP over WireGuard (Tailscale)
+  | HTTPS over WireGuard (Tailscale)
   |
   v
-agent-to-go :8090 (bound to Tailscale IP only)
+agent-to-go :443 (tsnet — embedded Tailscale node, automatic TLS)
   |
-  |-- GET  /                 Index page (lists sessions, renders CSRF token)
+  |-- GET  /                 Index page (lists sessions)
   |-- POST /connect/{s}      Start ttyd, redirect to /terminal/{s}/
   |-- GET  /terminal/{s}/*   Reverse proxy to ttyd (HTTP + WebSocket)
-  |-- POST /spawn            Create new tmux session + ttyd (accepts dir or project)
+  |-- POST /spawn            Create new tmux session + ttyd
   |-- POST /spawn-project    Same handler as /spawn
   |-- POST /kill/{s}         Kill a tmux session
   |
-  | reverse proxy (Host header validated)
+  | reverse proxy
   |
   v
 ttyd :7700+ (one per active session, bound to 127.0.0.1 only)
@@ -42,91 +42,80 @@ tmux session (persistent terminal)
 
 ## Security layers
 
-### 1. Network binding (primary boundary)
+All security primitives are in `server/security.go`. The CSRF middleware is wired in `server/main.go`.
 
-The Go server binds exclusively to the Tailscale IP. ttyd instances bind to `127.0.0.1` (localhost only), making them unreachable from the network — all access goes through the reverse proxy. If Tailscale is unavailable, the server refuses to start (`log.Fatal`). This is the main security boundary.
+### 1. Tailscale network (primary boundary)
 
-### 2. CSRF protection
+tsnet embeds a Tailscale node directly in the Go process. The server is only reachable from the Tailnet — there is no public IP, no port forwarding, no firewall rules to maintain. If Tailscale is unavailable, the server refuses to start.
 
-All state-changing endpoints (connect, spawn, kill) require a POST with a valid CSRF token. The token is:
-- 32 bytes from `crypto/rand`, hex-encoded (256 bits of entropy)
-- Compared with `subtle.ConstantTimeCompare` (timing-safe)
-- Delivered only in hidden form fields, never in URLs
-- Generated once at startup and static for the lifetime of the process. Per-request rotation would be stronger, but adds complexity for a single-user service where the token is only visible to devices that can already load the page (i.e., devices on your Tailnet)
+### 2. TLS (transport encryption)
 
-This prevents cross-origin attacks where a malicious website tries to submit forms to your agent-to-go instance.
+tsnet provides automatic Let's Encrypt TLS certificates for `*.ts.net` domains via `ListenTLS`. All traffic is encrypted twice: WireGuard (Tailscale tunnel) and TLS (HTTPS). This ensures encryption even within the Tailnet and enables gorilla/csrf's Referer checking (which requires HTTPS).
 
-### 3. Host header validation (DNS rebinding defense)
+### 3. CSRF protection (gorilla/csrf)
 
-All requests pass through a middleware that validates the `Host` header matches the Tailscale IP. This blocks DNS rebinding attacks: after an attacker rebinds their domain to your IP, the browser sends `Host: evil.com` — which is rejected before any handler runs. The attacker can never read the index page or extract the CSRF token.
+All state-changing endpoints (connect, spawn, kill) require POST with a valid CSRF token. gorilla/csrf implements:
 
-The middleware also sets `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'` on all responses to prevent clickjacking via iframes.
+- **Double-submit cookie pattern**: a random token in a cookie + a matching token in the form body. The server validates they match via HMAC.
+- **Per-request token rotation** with BREACH mitigation (masked tokens).
+- **Referer checking**: on HTTPS requests, gorilla/csrf validates the Referer header matches the request host. Cross-origin POSTs are rejected.
+- **SameSite=Strict cookies**: the CSRF cookie is never sent on cross-origin requests in modern browsers.
+- **Persistent 32-byte HMAC key**: stored at `~/.config/agent-to-go/csrf-key` with `0600` permissions. Generated from `crypto/rand`.
 
-### 4. Origin validation
+### 4. POST enforcement
 
-POST requests are checked against the Tailscale IP origin. Cross-origin requests (from `evil.com`, `null`, etc.) are rejected.
+All mutating endpoints (`/connect/`, `/spawn`, `/kill/`) reject non-POST methods with 405. This prevents GET-based attacks (img tags, link prefetch, etc.) from triggering side effects. Implemented in `requirePOST()` in `security.go`.
 
-The origin is matched against the exact Tailscale IP with boundary checking — the character after the IP must be `:` (port), `/` (path), or end-of-string. This prevents prefix attacks where `http://100.1.2.3.evil.com` would match a Tailscale IP of `100.1.2.3`.
+### 5. WebSocket Origin validation
 
-**Limitation:** When both `Origin` and `Referer` headers are absent, the request is allowed. This is necessary because same-origin browser requests sometimes omit both. It means non-browser HTTP clients on the Tailnet can bypass origin validation. This is by design — origin validation protects against browser-based cross-origin attacks only, not against arbitrary network access (which is Tailscale's job).
+WebSocket upgrades on `/terminal/{session}/*` check the `Origin` header against the request's `Host` header. Browsers send Origin on WebSocket handshakes and it cannot be forged by cross-origin pages. This blocks cross-site WebSocket CSRF. Implemented in `checkWebSocketOrigin()` in `security.go`.
 
-### 5. Session name validation
+### 6. Session name validation
 
 Session names in `/connect/` and `/kill/` are validated against the actual list of tmux sessions. Only exact matches are accepted. Since session names are passed to `exec.Command` (not a shell), command injection via session names is not possible even without this validation — but the validation provides defense in depth.
 
-### 6. Command and directory allowlists
-
-The spawn endpoints require commands and directories to be in an explicit allowlist (`~/.config/agent-to-go/config.yaml`). If no config file exists, spawn is entirely disabled.
-
-- **Commands:** Exact string match. `"bash -c evil"` does not match `"bash"`.
-- **Directories:** Resolved to absolute paths with symlinks followed (`filepath.EvalSymlinks`). Path traversal via `../` is normalized before checking. Symlinks inside allowed directories that point outside are rejected.
-
 ### 7. Reverse proxy isolation
 
-ttyd instances bind to `127.0.0.1` and are not directly reachable from the network. All browser traffic goes through the `/terminal/{session}/` reverse proxy, which inherits the Host header middleware (layer 3). This closes the DNS rebinding attack path against ttyd — an attacker who rebinds to the Tailscale IP cannot reach ttyd ports, and requests through the main server are rejected by Host validation.
+ttyd instances bind to `127.0.0.1` and are not directly reachable from the network. All browser traffic goes through the `/terminal/{session}/` reverse proxy. This means ttyd is never exposed to cross-origin attacks directly.
 
-The reverse proxy handles both regular HTTP requests and WebSocket upgrades (used by ttyd for terminal I/O).
-
-Note: `/terminal/{session}/` is accessible via GET (no CSRF required) because the browser needs to load ttyd's HTML, JavaScript, and WebSocket over GET. However, a session only appears in the proxy's routing table after a CSRF-protected POST to `/connect/`. So an attacker who knows a session name still can't reach it without first passing the CSRF+Origin check on `/connect/`.
+`/terminal/{session}/` is accessible via GET (no CSRF required) because the browser needs to load ttyd's HTML, JavaScript, and WebSocket. However, a session only appears in the proxy's routing table after a CSRF-protected POST to `/connect/`.
 
 ### 8. Argument injection prevention
 
-All `tmux` and `ttyd` commands use `exec.Command` (no shell invocation). The `tmux new-session` command uses `--` before the command argument to prevent flag injection. Session names passed to `tmux attach -t`, `tmux kill-session -t`, and `tmux show-environment -t` are not `--`-separated, but are validated against the real tmux session list first — only exact matches to existing sessions are accepted. Since session names are generated by `generateSessionName` (which always starts with an alphanumeric command name), they cannot start with `-`.
+All `tmux` and `ttyd` commands use `exec.Command` (no shell invocation). The `tmux new-session` command uses `--` before the command argument to prevent flag injection. Session names passed to `-t` flags are validated against the real tmux session list first. Since session names are generated by `generateSessionName` (which always starts with an alphanumeric command name), they cannot start with `-`.
 
 ## Known limitations and accepted risks
 
 ### Tailnet access = full access
 
-There is no authentication layer within the Tailnet. The CSRF token and origin validation protect against cross-origin browser attacks only. A script running on any Tailnet device can load the index page (getting the CSRF token) and then call any endpoint. This is the intended security model — Tailscale is the auth boundary.
+There is no authentication within the Tailnet. A script running on any Tailnet device can access any endpoint. This is the intended security model — Tailscale is the auth boundary.
 
-### Error messages
+### Any command can be spawned
 
-All error responses return generic messages (`"access denied"`, `"failed to start terminal"`, etc.). Detailed error information is logged server-side only. This prevents information disclosure about allowlist contents, internal paths, and system configuration.
-
-### Cleanup goroutine holds mutex during Kill+Wait
-
-The orphaned ttyd cleanup goroutine (`cleanupOrphanedTtyd`) calls `Process.Kill()` then `cmd.Wait()` while holding `portMutex`. Since `Kill` sends SIGKILL, `Wait` returns promptly. If it didn't (kernel bug, zombie process issues), it would block all `startTtyd` calls. In practice this hasn't been an issue.
+There are no command or directory restrictions. Any command can be run in any directory via the spawn endpoint. The security boundary is the Tailnet — if you can reach the server, you have full terminal access anyway.
 
 ### tmux runs commands through sh -c
 
-When `spawnSession` calls `tmux new-session ... -- cmd`, tmux passes `cmd` through `sh -c`. Since the command is validated against an exact-match allowlist containing only simple command names, this is not exploitable. But if the allowlist were to contain a command name with shell metacharacters, tmux would interpret them.
+When `spawnSession` calls `tmux new-session ... -- cmd`, tmux passes `cmd` through `sh -c`. Since the server is only accessible from the Tailnet, this is equivalent to having shell access (which the terminal already provides).
 
 ### Catch-all route
 
-`mux.HandleFunc("/", handleIndex)` makes the index page a catch-all — any unmatched path returns the full index page. This means there are no 404 responses. This has no security impact since the index page is read-only, but it also means any path serves the CSRF token.
+`mux.HandleFunc("/", handleIndex)` makes the index page a catch-all — any unmatched path returns the full index page (no 404 responses). This has no security impact since the index page is read-only.
 
-Note on pprof: Go's `net/http/pprof` package registers debug handlers on `http.DefaultServeMux` at import time. This code uses a custom `http.NewServeMux()` passed to `ListenAndServe`, so pprof handlers would never be served even if the package were imported transitively.
+### Cleanup goroutine holds mutex during Kill+Wait
+
+The orphaned ttyd cleanup goroutine calls `Process.Kill()` then `cmd.Wait()` while holding `portMutex`. Since `Kill` sends SIGKILL, `Wait` returns promptly. If it didn't (kernel bug), it would block all `startTtyd` calls.
 
 ### Readiness poll holds mutex
 
-The `startTtyd` readiness loop (polling TCP for up to 2 seconds) runs while holding `portMutex`. This blocks other `startTtyd` calls and the cleanup goroutine during the poll. In practice this causes at most 2 seconds of contention per ttyd startup, which is acceptable for a single-user service.
+The `startTtyd` readiness loop (polling TCP for up to 2 seconds) runs while holding `portMutex`. This blocks other `startTtyd` calls during the poll — acceptable for a single-user service.
 
 ## Test coverage
 
-The test suite (`main_test.go`) includes:
+The test suite includes:
 
-- **Security property tests:** CSRF required on all endpoints, constant-time comparison, origin rejection, POST-only enforcement, session validation
-- **Attack simulations:** Cross-site reverse shell, IP spray, hidden form CSRF, img tag GET, clickjacking, DNS rebinding (POST and GET/read), session kill DoS, stolen CSRF + wrong origin, null origin, WebSocket hijacking, origin IP prefix attack
-- **Allowlist tests:** Command/directory rejection, subdirectory allowance, path traversal blocking, reverse shell blocking, spawn-disabled-without-config, symlink bypass prevention
-- **Origin validation:** Exact IP boundary checking, prefix attack rejection, port and path suffixes
-- **Host validation:** Tailscale IP accepted (with/without port), evil domains rejected, localhost rejected, IP prefix domains rejected
+- **CSRF integration tests** (`csrf_test.go`): token required on all POST endpoints, wrong token rejected, valid token accepted
+- **Attack simulations** (`csrf_test.go`): cross-site reverse shell, hidden form CSRF, img tag GET, session kill DoS
+- **Handler tests** (`handlers_test.go`): POST-only enforcement, invalid session rejection
+- **Tmux tests** (`tmux_test.go`): session name generation, nonexistent directory rejection
+- **Proxy tests** (`ttyd_test.go`): empty session, unknown session, known session proxies correctly
