@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,7 +25,7 @@ func main() {
 	}
 	defer ln.Close()
 
-	status, err := ts.Up(nil)
+	status, err := ts.Up(context.Background())
 	if err != nil {
 		log.Fatalf("tsnet Up: %v", err)
 	}
