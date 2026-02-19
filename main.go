@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/rand"
 	_ "embed"
-	"encoding/hex"
 	"fmt"
 	"html/template"
 	"io"
@@ -707,11 +706,4 @@ func handleKill(w http.ResponseWriter, r *http.Request) {
 	exec.Command("tmux", "kill-session", "-t", session).Run()
 
 	http.Redirect(w, r, "/", http.StatusFound)
-}
-
-// generateCSRFKeyHex returns a hex-encoded random string (used only by tests).
-func generateCSRFKeyHex() string {
-	bytes := make([]byte, 32)
-	rand.Read(bytes)
-	return hex.EncodeToString(bytes)
 }

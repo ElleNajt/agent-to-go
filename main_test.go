@@ -535,27 +535,6 @@ func TestGenerateSessionName(t *testing.T) {
 	}
 }
 
-func TestCSRFKeyHexGeneration(t *testing.T) {
-	tokens := make(map[string]bool)
-	for i := 0; i < 10; i++ {
-		token := generateCSRFKeyHex()
-		if tokens[token] {
-			t.Error("token collision detected - not random enough")
-		}
-		tokens[token] = true
-
-		if len(token) != 64 {
-			t.Errorf("token should be 64 chars, got %d", len(token))
-		}
-
-		for _, c := range token {
-			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-				t.Errorf("token contains non-hex character: %c", c)
-			}
-		}
-	}
-}
-
 // =============================================================================
 // REVERSE PROXY TESTS
 // =============================================================================
