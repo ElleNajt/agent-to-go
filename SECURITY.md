@@ -23,8 +23,9 @@ Phone (browser)
 agent-to-go :443 (tsnet — embedded Tailscale node, automatic TLS)
   |
   |-- GET  /                 Index page (lists sessions)
-  |-- POST /connect/{s}      Start ttyd, redirect to /terminal/{s}/
-  |-- GET  /terminal/{s}/*   Reverse proxy to ttyd (HTTP + WebSocket)
+  |-- POST /connect/{s}      Start ttyd, redirect to /app/terminal/{s}/
+  |-- GET  /app/{name}/*     Reverse proxy to registered apps (HTTP + WebSocket)
+  |-- GET  /app/terminal/{s}/*  Reverse proxy to ttyd (via app registry)
   |-- POST /spawn            Create new tmux session + ttyd
   |-- POST /spawn-project    Same handler as /spawn
   |-- POST /kill/{s}         Kill a tmux session
@@ -69,7 +70,7 @@ All mutating endpoints (`/connect/`, `/spawn`, `/kill/`) reject non-POST methods
 
 ### 5. WebSocket Origin validation
 
-WebSocket upgrades on `/terminal/{session}/*` check the `Origin` header against the request's `Host` header. Browsers send Origin on WebSocket handshakes and it cannot be forged by cross-origin pages. This blocks cross-site WebSocket CSRF. Implemented in `checkWebSocketOrigin()` in `security.go`.
+WebSocket upgrades on `/app/*` check the `Origin` header against the request's `Host` header. Browsers send Origin on WebSocket handshakes and it cannot be forged by cross-origin pages. This blocks cross-site WebSocket CSRF. Implemented in `checkWebSocketOrigin()` in `security.go`.
 
 ### 6. Session name validation
 
@@ -77,9 +78,9 @@ Session names in `/connect/` and `/kill/` are validated against the actual list 
 
 ### 7. Reverse proxy isolation
 
-ttyd instances bind to `127.0.0.1` and are not directly reachable from the network. All browser traffic goes through the `/terminal/{session}/` reverse proxy. This means ttyd is never exposed to cross-origin attacks directly.
+ttyd instances bind to `127.0.0.1` and are not directly reachable from the network. All browser traffic goes through the `/app/terminal/{session}/` reverse proxy. This means ttyd is never exposed to cross-origin attacks directly. External web apps registered via `--web-app` are similarly proxied through `/app/{name}/`.
 
-`/terminal/{session}/` is accessible via GET (no CSRF required) because the browser needs to load ttyd's HTML, JavaScript, and WebSocket. However, a session only appears in the proxy's routing table after a POST to `/connect/` (protected by CSRF middleware and POST enforcement).
+`/app/*` is accessible via GET (no CSRF required) because the browser needs to load the app's HTML, JavaScript, and WebSocket. However, ttyd sessions only appear in the proxy's routing table after a POST to `/connect/` (protected by CSRF middleware and POST enforcement).
 
 ### 8. Argument injection prevention
 
