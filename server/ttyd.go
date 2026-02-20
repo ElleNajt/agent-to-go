@@ -31,6 +31,10 @@ func startTtyd(session string) (int, error) {
 		return inst.port, nil
 	}
 
+	if len(ttydInstances) >= 100 {
+		return 0, fmt.Errorf("too many concurrent sessions (max 100)")
+	}
+
 	var port int
 	if len(freePorts) > 0 {
 		port = freePorts[len(freePorts)-1]

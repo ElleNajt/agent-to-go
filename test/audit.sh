@@ -62,7 +62,7 @@ echo "============================================"
 echo ""
 
 echo "[CSRF Protection (Sec-Fetch-Site)]"
-# filippo.io/csrf blocks cross-site browser requests via Sec-Fetch-Site header.
+# CrossOriginProtection blocks cross-site browser requests via Sec-Fetch-Site header.
 check_http "Cross-site POST /spawn blocked" "403" \
     -X POST -H "Sec-Fetch-Site: cross-site" -d "dir=/tmp" "$SERVER_URL/spawn"
 check_http "Cross-site POST /kill blocked" "403" \

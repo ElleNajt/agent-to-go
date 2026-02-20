@@ -12,7 +12,7 @@ Phone-accessible terminal sessions via tmux + ttyd + Tailscale.
 
 ## Architecture
 
-- `server/` - Go source: HTTP server on tsnet (Tailscale TLS), filippo.io/csrf, ttyd reverse proxy
+- `server/` - Go source: HTTP server on tsnet (Tailscale TLS), net/http.CrossOriginProtection, ttyd reverse proxy
 - `agent-tmux` - Bash script that creates uniquely-named tmux sessions
 
 ## Security model

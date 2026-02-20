@@ -55,14 +55,14 @@ tsnet provides automatic Let's Encrypt TLS certificates for `*.ts.net` domains v
 
 TLS also eliminates DNS rebinding attacks. The server only accepts connections through the Tailscale tunnel (not on any local IP), and a rebinding attacker cannot obtain a valid TLS certificate for `agent-to-go.<tailnet>.ts.net`. The browser's TLS handshake would fail before any HTTP request is sent.
 
-### 3. CSRF protection (filippo.io/csrf)
+### 3. CSRF protection (net/http.CrossOriginProtection)
 
-All state-changing endpoints (connect, spawn, kill) are protected by filippo.io/csrf, which uses browser Fetch metadata headers instead of tokens and cookies:
+All state-changing endpoints (connect, spawn, kill) are protected by Go 1.25's `net/http.CrossOriginProtection`, which uses browser Fetch metadata headers instead of tokens and cookies:
 
 - **Sec-Fetch-Site header**: modern browsers send this header indicating whether a request is `same-origin`, `same-site`, or `cross-site`. Cross-site POST requests are blocked with 403. This header cannot be forged by cross-origin JavaScript.
 - **Origin header fallback**: if `Sec-Fetch-Site` is absent, the `Origin` header is compared against the `Host` header. Mismatches are blocked.
 - **Non-browser requests allowed**: requests without either header (curl, APIs) are allowed through, since CSRF is fundamentally a browser-only attack.
-- **No tokens, cookies, or keys**: unlike gorilla/csrf, there is no application state to manage. The browser itself enforces the security boundary.
+- **No tokens, cookies, or keys**: no application state to manage. The browser itself enforces the security boundary.
 
 ### 4. POST enforcement
 

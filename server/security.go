@@ -5,7 +5,7 @@ package main
 // The security model is layered:
 //   1. Tailscale (network)  — only tailnet members can reach the server
 //   2. TLS (transport)      — tsnet provides automatic Let's Encrypt certs
-//   3. CSRF (request forge) — filippo.io/csrf using Sec-Fetch-Site headers
+//   3. CSRF (request forge) — net/http.CrossOriginProtection using Sec-Fetch-Site headers
 //   4. POST enforcement     — mutating endpoints reject non-POST methods
 //   5. WebSocket Origin     — cross-origin WebSocket upgrades are blocked
 //
@@ -18,15 +18,17 @@ package main
 import (
 	"net/http"
 	"net/url"
-
-	csrf "filippo.io/csrf/gorilla"
 )
 
 // newCSRFMiddleware returns CSRF protection middleware.
-// filippo.io/csrf uses browser Sec-Fetch-Site and Origin headers
-// to block cross-origin requests. No tokens or cookies needed.
+// Uses Go 1.25's net/http.CrossOriginProtection which checks
+// Sec-Fetch-Site and Origin headers to block cross-origin requests.
+// No tokens or cookies needed.
 func newCSRFMiddleware() func(http.Handler) http.Handler {
-	return csrf.Protect(nil)
+	cop := http.NewCrossOriginProtection()
+	return func(h http.Handler) http.Handler {
+		return cop.Handler(h)
+	}
 }
 
 // requirePOST checks that the request method is POST.

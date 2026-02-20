@@ -6,18 +6,16 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-
-	csrf "filippo.io/csrf/gorilla"
 )
 
-// newCSRFHandler wraps a handler with filippo.io/csrf for testing.
-// filippo.io/csrf uses Sec-Fetch-Site and Origin headers instead of tokens.
+// newCSRFHandler wraps a handler with net/http.CrossOriginProtection for testing.
 func newCSRFHandler(handler http.Handler) http.Handler {
-	return csrf.Protect(nil)(handler)
+	cop := http.NewCrossOriginProtection()
+	return cop.Handler(handler)
 }
 
 // crossSitePost makes a POST that looks like a cross-origin browser request.
-// filippo.io/csrf blocks these based on Sec-Fetch-Site header.
+// CrossOriginProtection blocks these based on Sec-Fetch-Site header.
 func crossSitePost(t *testing.T, handler http.Handler, path string, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest("POST", path, strings.NewReader(form.Encode()))
@@ -29,7 +27,7 @@ func crossSitePost(t *testing.T, handler http.Handler, path string, form url.Val
 }
 
 // sameSitePost makes a POST that looks like a same-origin browser request.
-// filippo.io/csrf allows these.
+// CrossOriginProtection allows these.
 func sameSitePost(t *testing.T, handler http.Handler, path string, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest("POST", path, strings.NewReader(form.Encode()))
