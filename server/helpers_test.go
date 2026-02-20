@@ -7,62 +7,41 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gorilla/csrf"
+	csrf "filippo.io/csrf/gorilla"
 )
 
-var csrfTestKey = []byte("test-key-must-be-32-bytes-long!!")
-
-// newCSRFHandler wraps a handler with gorilla/csrf for testing.
+// newCSRFHandler wraps a handler with filippo.io/csrf for testing.
+// filippo.io/csrf uses Sec-Fetch-Site and Origin headers instead of tokens.
 func newCSRFHandler(handler http.Handler) http.Handler {
-	return csrf.Protect(
-		csrfTestKey,
-		csrf.Secure(false),
-		csrf.SameSite(csrf.SameSiteStrictMode),
-		csrf.Path("/"),
-	)(handler)
+	return csrf.Protect(nil)(handler)
 }
 
-// getCSRFToken does a GET to the index page to extract a valid CSRF cookie + token pair.
-func getCSRFToken(t *testing.T, handler http.Handler) (string, []*http.Cookie) {
+// crossSitePost makes a POST that looks like a cross-origin browser request.
+// filippo.io/csrf blocks these based on Sec-Fetch-Site header.
+func crossSitePost(t *testing.T, handler http.Handler, path string, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest("GET", "/", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GET /: expected 200, got %d", w.Code)
-	}
-
-	body := w.Body.String()
-	marker := `name="gorilla.csrf.Token" value="`
-	idx := strings.Index(body, marker)
-	if idx == -1 {
-		t.Fatalf("CSRF token field not found in response body")
-	}
-	start := idx + len(marker)
-	end := strings.Index(body[start:], `"`)
-	if end == -1 {
-		t.Fatalf("CSRF token value not terminated")
-	}
-	token := body[start : start+end]
-
-	return token, w.Result().Cookies()
-}
-
-// postWithCSRF makes a POST request with a valid CSRF token.
-func postWithCSRF(t *testing.T, handler http.Handler, path string, form url.Values) *httptest.ResponseRecorder {
-	t.Helper()
-	token, cookies := getCSRFToken(t, handler)
-
-	form.Set("gorilla.csrf.Token", token)
 	req := httptest.NewRequest("POST", path, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	// Mark as plaintext HTTP so gorilla/csrf skips the Referer check.
-	req = csrf.PlaintextHTTPRequest(req)
-	for _, c := range cookies {
-		req.AddCookie(c)
-	}
-
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	return w
+}
+
+// sameSitePost makes a POST that looks like a same-origin browser request.
+// filippo.io/csrf allows these.
+func sameSitePost(t *testing.T, handler http.Handler, path string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	return w
+}
+
+// postWithCSRF makes a same-origin POST (the legitimate case).
+// Kept for backward compatibility with existing tests.
+func postWithCSRF(t *testing.T, handler http.Handler, path string, form url.Values) *httptest.ResponseRecorder {
+	return sameSitePost(t, handler, path, form)
 }

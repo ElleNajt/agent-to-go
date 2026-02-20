@@ -5,76 +5,32 @@ package main
 // The security model is layered:
 //   1. Tailscale (network)  — only tailnet members can reach the server
 //   2. TLS (transport)      — tsnet provides automatic Let's Encrypt certs
-//   3. CSRF (request forge) — gorilla/csrf double-submit cookie, SameSite Strict
+//   3. CSRF (request forge) — filippo.io/csrf using Sec-Fetch-Site headers
 //   4. POST enforcement     — mutating endpoints reject non-POST methods
 //   5. WebSocket Origin     — cross-origin WebSocket upgrades are blocked
 //
 // This file contains all web security configuration and enforcement.
 // Read this file to understand the web security posture.
 //
-// The one security-relevant call outside this file is
-// csrf.TemplateField(r) in handlers.go, which embeds the CSRF token
-// into HTML forms. If that call were removed, all POSTs would be
-// rejected (fail-closed).
-//
 // Non-web security decisions (127.0.0.1 binding, exec.Command flags)
 // live in ttyd.go and tmux.go.
 
 import (
-	"crypto/rand"
-	"fmt"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 
-	"github.com/gorilla/csrf"
+	csrf "filippo.io/csrf/gorilla"
 )
 
-// loadOrCreateCSRFKey reads or creates a persistent 32-byte CSRF key.
-// gorilla/csrf needs this key to HMAC-sign cookies; it must persist
-// across restarts so existing cookies remain valid.
-func loadOrCreateCSRFKey(stateDir string) ([]byte, error) {
-	keyPath := filepath.Join(stateDir, "csrf-key")
-	data, err := os.ReadFile(keyPath)
-	if err == nil && len(data) == 32 {
-		return data, nil
-	}
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		return nil, fmt.Errorf("generating CSRF key: %w", err)
-	}
-	if err := os.MkdirAll(stateDir, 0700); err != nil {
-		return nil, fmt.Errorf("creating state dir: %w", err)
-	}
-	if err := os.WriteFile(keyPath, key, 0600); err != nil {
-		return nil, fmt.Errorf("writing CSRF key: %w", err)
-	}
-	return key, nil
-}
-
-// newCSRFMiddleware configures gorilla/csrf for this application.
-//   - Secure(true): cookie only sent over HTTPS
-//   - SameSite Strict: cookie never sent on cross-origin requests
-//   - Path("/"): cookie covers all routes
-//
-// gorilla/csrf additionally provides:
-//   - Double-submit cookie pattern (token in cookie + form body, HMAC-verified)
-//   - Per-request token masking (BREACH mitigation)
-//   - Referer checking on HTTPS (rejects cross-origin POST)
-//   - HttpOnly cookies by default
-//   - Safe methods (GET, HEAD, OPTIONS, TRACE) are not checked
-func newCSRFMiddleware(key []byte) func(http.Handler) http.Handler {
-	return csrf.Protect(
-		key,
-		csrf.Secure(true),
-		csrf.SameSite(csrf.SameSiteStrictMode),
-		csrf.Path("/"),
-	)
+// newCSRFMiddleware returns CSRF protection middleware.
+// filippo.io/csrf uses browser Sec-Fetch-Site and Origin headers
+// to block cross-origin requests. No tokens or cookies needed.
+func newCSRFMiddleware() func(http.Handler) http.Handler {
+	return csrf.Protect(nil)
 }
 
 // requirePOST checks that the request method is POST.
-// CSRF validation is handled by gorilla/csrf middleware.
+// CSRF validation is handled by the CSRF middleware.
 func requirePOST(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != "POST" {

@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
-
 	"tailscale.com/tsnet"
 )
 
@@ -30,13 +27,6 @@ func main() {
 		log.Fatalf("tsnet Up: %v", err)
 	}
 
-	home, _ := os.UserHomeDir()
-	stateDir := filepath.Join(home, ".config", "agent-to-go")
-	csrfKey, err := loadOrCreateCSRFKey(stateDir)
-	if err != nil {
-		log.Fatalf("CSRF key: %v", err)
-	}
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleIndex)
 	mux.HandleFunc("/connect/", handleConnect)
@@ -45,7 +35,7 @@ func main() {
 	mux.HandleFunc("/spawn-project", handleSpawn)
 	mux.HandleFunc("/kill/", handleKill)
 
-	csrfMiddleware := newCSRFMiddleware(csrfKey)
+	csrfMiddleware := newCSRFMiddleware()
 
 	go cleanupOrphanedTtyd()
 

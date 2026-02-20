@@ -10,8 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"github.com/gorilla/csrf"
 )
 
 //go:embed index.html
@@ -30,8 +28,7 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 	groups := groupSessionsByProject(sessions)
 
 	if err := indexTmpl.Execute(w, map[string]interface{}{
-		"Groups":    groups,
-		"CSRFField": csrf.TemplateField(r),
+		"Groups": groups,
 	}); err != nil {
 		log.Printf("template execute error: %v", err)
 	}
