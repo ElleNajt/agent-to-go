@@ -2,43 +2,22 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
+	"os"
 	"strings"
 	"tailscale.com/tsnet"
 )
 
-type webAppFlag []string
-
-func (f *webAppFlag) String() string { return strings.Join(*f, ", ") }
-func (f *webAppFlag) Set(value string) error {
-	*f = append(*f, value)
-	return nil
-}
-
 func main() {
-	var webApps webAppFlag
-	flag.Var(&webApps, "web-app", "Register a web app as name=port (e.g. --web-app grafana=3000)")
-	flag.Parse()
-
-	for _, spec := range webApps {
-		parts := strings.SplitN(spec, "=", 2)
-		if len(parts) != 2 {
-			log.Fatalf("invalid --web-app flag %q: expected name=port", spec)
-		}
-		port, err := strconv.Atoi(parts[1])
-		if err != nil {
-			log.Fatalf("invalid port in --web-app %q: %v", spec, err)
-		}
-		registerApp(parts[0], port)
-		log.Printf("Registered web app %q on port %d", parts[0], port)
-	}
+	machineHostname, _ := os.Hostname()
+	// Strip .local suffix if present (macOS)
+	machineHostname = strings.TrimSuffix(machineHostname, ".local")
+	machineHostname = strings.ToLower(machineHostname)
 
 	ts := &tsnet.Server{
-		Hostname: "agent-to-go-fugue",
+		Hostname: "agent-to-go-" + machineHostname,
 	}
 	defer ts.Close()
 

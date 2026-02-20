@@ -78,7 +78,7 @@ Session names in `/connect/` and `/kill/` are validated against the actual list 
 
 ### 7. Reverse proxy isolation
 
-ttyd instances bind to `127.0.0.1` and are not directly reachable from the network. All browser traffic goes through the `/app/terminal/{session}/` reverse proxy. This means ttyd is never exposed to cross-origin attacks directly. External web apps registered via `--web-app` are similarly proxied through `/app/{name}/`.
+ttyd instances bind to `127.0.0.1` and are not directly reachable from the network. All browser traffic goes through the `/app/terminal/{session}/` reverse proxy. This means ttyd is never exposed to cross-origin attacks directly.
 
 `/app/*` is accessible via GET (no CSRF required) because the browser needs to load the app's HTML, JavaScript, and WebSocket. However, ttyd sessions only appear in the proxy's routing table after a POST to `/connect/` (protected by CSRF middleware and POST enforcement).
 

@@ -14,7 +14,6 @@ import (
 
 // apps maps app name -> localhost port for reverse proxying.
 // ttyd sessions are registered under "terminal/{session}".
-// External web apps are registered under their name directly.
 var apps sync.Map
 
 func registerApp(name string, port int) {
