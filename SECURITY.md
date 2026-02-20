@@ -50,19 +50,18 @@ tsnet embeds a Tailscale node directly in the Go process. The server is only rea
 
 ### 2. TLS (transport encryption + DNS rebinding defense)
 
-tsnet provides automatic Let's Encrypt TLS certificates for `*.ts.net` domains via `ListenTLS`. All traffic is encrypted twice: WireGuard (Tailscale tunnel) and TLS (HTTPS). This ensures encryption even within the Tailnet and enables gorilla/csrf's Referer checking (which requires HTTPS).
+tsnet provides automatic Let's Encrypt TLS certificates for `*.ts.net` domains via `ListenTLS`. All traffic is encrypted twice: WireGuard (Tailscale tunnel) and TLS (HTTPS).
 
 TLS also eliminates DNS rebinding attacks. The server only accepts connections through the Tailscale tunnel (not on any local IP), and a rebinding attacker cannot obtain a valid TLS certificate for `agent-to-go.<tailnet>.ts.net`. The browser's TLS handshake would fail before any HTTP request is sent.
 
-### 3. CSRF protection (gorilla/csrf)
+### 3. CSRF protection (filippo.io/csrf)
 
-All state-changing endpoints (connect, spawn, kill) require POST with a valid CSRF token. gorilla/csrf implements:
+All state-changing endpoints (connect, spawn, kill) are protected by filippo.io/csrf, which uses browser Fetch metadata headers instead of tokens and cookies:
 
-- **Double-submit cookie pattern**: a random token in a cookie + a matching token in the form body. The server validates they match via HMAC.
-- **Per-request token rotation** with BREACH mitigation (masked tokens).
-- **Referer checking**: on HTTPS requests, gorilla/csrf validates the Referer header matches the request host. Cross-origin POSTs are rejected.
-- **SameSite=Strict cookies**: the CSRF cookie is never sent on cross-origin requests in modern browsers.
-- **Persistent 32-byte HMAC key**: stored at `~/.config/agent-to-go/csrf-key` with `0600` permissions. Generated from `crypto/rand`.
+- **Sec-Fetch-Site header**: modern browsers send this header indicating whether a request is `same-origin`, `same-site`, or `cross-site`. Cross-site POST requests are blocked with 403. This header cannot be forged by cross-origin JavaScript.
+- **Origin header fallback**: if `Sec-Fetch-Site` is absent, the `Origin` header is compared against the `Host` header. Mismatches are blocked.
+- **Non-browser requests allowed**: requests without either header (curl, APIs) are allowed through, since CSRF is fundamentally a browser-only attack.
+- **No tokens, cookies, or keys**: unlike gorilla/csrf, there is no application state to manage. The browser itself enforces the security boundary.
 
 ### 4. POST enforcement
 
@@ -80,7 +79,7 @@ Session names in `/connect/` and `/kill/` are validated against the actual list 
 
 ttyd instances bind to `127.0.0.1` and are not directly reachable from the network. All browser traffic goes through the `/terminal/{session}/` reverse proxy. This means ttyd is never exposed to cross-origin attacks directly.
 
-`/terminal/{session}/` is accessible via GET (no CSRF required) because the browser needs to load ttyd's HTML, JavaScript, and WebSocket. However, a session only appears in the proxy's routing table after a CSRF-protected POST to `/connect/`.
+`/terminal/{session}/` is accessible via GET (no CSRF required) because the browser needs to load ttyd's HTML, JavaScript, and WebSocket. However, a session only appears in the proxy's routing table after a POST to `/connect/` (protected by CSRF middleware and POST enforcement).
 
 ### 8. Argument injection prevention
 
@@ -116,7 +115,7 @@ The `startTtyd` readiness loop (polling TCP for up to 2 seconds) runs while hold
 
 The test suite includes:
 
-- **CSRF integration tests** (`csrf_test.go`): token required on all POST endpoints, wrong token rejected, valid token accepted
+- **CSRF integration tests** (`csrf_test.go`): cross-site requests blocked, same-origin requests accepted, cross-origin Origin header blocked
 - **Attack simulations** (`csrf_test.go`): cross-site reverse shell, hidden form CSRF, img tag GET, session kill DoS
 - **Handler tests** (`handlers_test.go`): POST-only enforcement, invalid session rejection
 - **Tmux tests** (`tmux_test.go`): session name generation, nonexistent directory rejection

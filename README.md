@@ -2,7 +2,7 @@
 
 A secure building block for accessing local services from your phone — Claude Code, Codex, Emacs, or anything that runs in a terminal.
 
-An HTTPS server with tsnet (embedded Tailscale) and gorilla/csrf, a reverse proxy for ttyd terminals. Runs on your Tailnet with automatic TLS. See [SECURITY.md](SECURITY.md) for the full threat model.
+An HTTPS server with tsnet (embedded Tailscale) and filippo.io/csrf, a reverse proxy for ttyd terminals. Runs on your Tailnet with automatic TLS. See [SECURITY.md](SECURITY.md) for the full threat model.
 
 **Warning:** This gives your phone full terminal access to your computer through your Tailnet. Review the code and security model before trusting it, and please contact me if you find any issues. Consider running on a dedicated coding VM rather than a machine with important secrets until this has been thoroughly hardened.
 
@@ -112,7 +112,7 @@ If you're already inside tmux, it creates a detached session and switches to it.
 
 - tsnet embeds a Tailscale node — server is only reachable from your Tailnet
 - Automatic TLS via Let's Encrypt (HTTPS, not just WireGuard)
-- gorilla/csrf on all state-changing endpoints (double-submit cookie, SameSite Strict)
+- filippo.io/csrf on all state-changing endpoints (Sec-Fetch-Site header validation)
 - WebSocket Origin validation blocks cross-site terminal hijacking
 - ttyd instances bound to localhost, accessed via reverse proxy only
 - Orphaned ttyd processes cleaned up automatically
@@ -148,7 +148,7 @@ All security primitives are in one file: `server/security.go`. See [SECURITY.md]
 │           ┌──────┴──────┐                                       │
 │           │ agent-to-go │  HTTPS server (tsnet)                 │
 │           │    :443     │  - automatic TLS                      │
-│           │             │  - gorilla/csrf                       │
+│           │             │  - filippo.io/csrf                     │
 │           └──────▲──────┘  - reverse proxies ttyd               │
 │                  │                                              │
 │                  │ embedded Tailscale node (tsnet)              │
