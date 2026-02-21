@@ -35,7 +35,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleIndex)
 	mux.HandleFunc("/connect/", handleConnect)
-	mux.HandleFunc("/app/", handleApp)
+	mux.HandleFunc("/terminal/", handleTerminal)
 	mux.HandleFunc("/spawn", handleSpawn)
 	mux.HandleFunc("/spawn-project", handleSpawn)
 	mux.HandleFunc("/kill/", handleKill)

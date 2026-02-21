@@ -62,7 +62,7 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, fmt.Sprintf("/app/terminal/%s/", session), http.StatusFound)
+	http.Redirect(w, r, fmt.Sprintf("/terminal/%s/", session), http.StatusFound)
 }
 
 func handleSpawn(w http.ResponseWriter, r *http.Request) {
@@ -121,7 +121,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to start terminal", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, fmt.Sprintf("/app/terminal/%s/", session), http.StatusFound)
+	http.Redirect(w, r, fmt.Sprintf("/terminal/%s/", session), http.StatusFound)
 }
 
 func handleKill(w http.ResponseWriter, r *http.Request) {

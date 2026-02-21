@@ -95,7 +95,7 @@ WS_CODE=$(http_code \
     -H "Connection: Upgrade" -H "Upgrade: websocket" \
     -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
     -H "Origin: https://evil.com" \
-    "$SERVER_URL/app/terminal/fake/ws")
+    "$SERVER_URL/terminal/fake/ws")
 if [ "$WS_CODE" = "403" ]; then
     pass "Cross-origin WebSocket rejected (HTTP 403)"
 elif [ "$WS_CODE" = "404" ]; then
@@ -217,7 +217,7 @@ curl -s --connect-timeout 5 -o /dev/null -w '%{http_code}\n' \
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
   -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
   -H 'Origin: https://evil.com' \
-  https://\$TARGET_HOST/app/terminal/test/ws 2>&1
+  https://\$TARGET_HOST/terminal/test/ws 2>&1
 
 echo PORTSCAN
 for port in 22 80 443 8090 7700; do
